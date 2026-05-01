@@ -88,6 +88,12 @@ LOSS_FLAGS=(--lam-hard "$LAM_HARD" --lam-kd-b "$LAM_KD_B"
             --lr-scale-rule "$LR_RULE" --warmup-steps "$WARMUP_STEPS")
 [ "$USE_HEAVY_KD"    = "1" ] && LOSS_FLAGS+=(--use-heavy-kd)
 [ "$FREEZE_BACKBONE" = "1" ] && LOSS_FLAGS+=(--freeze-backbone)
+# NO_AUTO_RESUME=1: useful when iterating on loss config — old optimizer
+# state can carry stale gradient statistics and re-cause the previous
+# regression even with new lambdas.  Default 1 (don't auto-resume) for
+# this iteration phase; flip to 0 once we're in production.
+NO_AUTO_RESUME="${NO_AUTO_RESUME:-1}"
+[ "$NO_AUTO_RESUME" = "1" ] && LOSS_FLAGS+=(--no-auto-resume)
 
 want_stage() { [ "$STAGE" = "all" ] || [ "$STAGE" = "$1" ]; }
 
@@ -257,15 +263,20 @@ fi
 # Pure byte-substitution into v1's .tflite — preserves flatbuffer
 # structure, op graph, BuiltinOptions, NHWC input layout, and the
 # TFLITE_METADATA buffer (NormalizationOptions for MediaPipe).
-# No external converter needed.
+# Missing checkpoints are skipped (so a Lite-only iteration that ran
+# only stage 4 doesn't fail here).
 if want_stage 6; then
     log "stage 6: export .task files (byte-substitution into v1 flatbuffer)"
-    python3 model/export.py --variant lite \
-        --ckpt /workspace/ckpts/lite_final.pt \
-        --out  /workspace/exports/lite_v2.task
-    python3 model/export.py --variant full \
-        --ckpt /workspace/ckpts/full_final.pt \
-        --out  /workspace/exports/full_v2.task
+    for v in lite full; do
+        ckpt="/workspace/ckpts/${v}_final.pt"
+        if [ -f "$ckpt" ]; then
+            python3 model/export.py --variant "$v" \
+                --ckpt "$ckpt" \
+                --out  "/workspace/exports/${v}_v2.task"
+        else
+            log "  $ckpt missing — skipping $v export"
+        fi
+    done
 fi
 
 # 7. Benchmark ---------------------------------------------------------
@@ -284,17 +295,21 @@ if want_stage 7; then
             --raw-root    "$ROOT/benchmark/raw" \
             --frames-root "$ROOT/benchmark/frames"
     fi
-    log "stage 7: run MediaPipe inference on all 5 variants (~5 min each)"
+    log "stage 7: run MediaPipe inference on available variants"
     # v1 predictions are .gitignored, so regenerate on Vast.  run_eval.py
     # caches per-take JSON and skips if already present, so reruns are fast.
+    # student_v2_* skipped if their .task isn't on disk (Lite-only iteration).
     export V2_EXPORTS_DIR="/workspace/exports"
     cd "$ROOT/benchmark"
-    for v in lite full heavy student_v2_lite student_v2_full; do
+    VARIANTS_TO_RUN=(lite full heavy)
+    [ -f "/workspace/exports/lite_v2.task" ] && VARIANTS_TO_RUN+=(student_v2_lite)
+    [ -f "/workspace/exports/full_v2.task" ] && VARIANTS_TO_RUN+=(student_v2_full)
+    for v in "${VARIANTS_TO_RUN[@]}"; do
         python3 run_eval.py --variant "$v"
     done
     log "stage 7: PA-MPJPE analysis vs v1 baselines"
     python3 analyze.py --manual-only \
-        --variants lite full heavy student_v2_lite student_v2_full \
+        --variants "${VARIANTS_TO_RUN[@]}" \
         --out results/analysis_v2.json
     log "stage 7: results saved to benchmark/results/analysis_v2.json"
     log "         v1 baseline (from results/RESULTS.md):"

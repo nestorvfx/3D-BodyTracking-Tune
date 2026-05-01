@@ -278,6 +278,11 @@ def main():
     ap.add_argument("--limit-synth",    type=int,   default=None)
     ap.add_argument("--limit-egoexo",   type=int,   default=None)
     ap.add_argument("--resume",         type=Path,  default=None)
+    ap.add_argument("--no-auto-resume", action="store_true", default=False,
+                    help="Disable auto-resume from the latest checkpoint in "
+                         "out_root.  Use when changing loss config: an old "
+                         "ckpt's optimizer state is fitted to old gradients "
+                         "and can crash or undo the new config.")
     ap.add_argument("--seed",           type=int,   default=42)
     # Loss-weight knobs (default to V2DistillationLoss signature defaults).
     # Set non-zero to let the user iterate on the smoke without code edits.
@@ -542,7 +547,7 @@ def main():
     resume_ckpt = None
     if args.resume and args.resume.exists():
         resume_ckpt = args.resume
-    else:
+    elif not args.no_auto_resume:
         latest = sorted(args.out_root.glob(f"{args.variant}_step*.pt"))
         if latest:
             resume_ckpt = latest[-1]
