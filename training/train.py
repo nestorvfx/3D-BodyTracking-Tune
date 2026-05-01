@@ -279,6 +279,29 @@ def main():
     ap.add_argument("--limit-egoexo",   type=int,   default=None)
     ap.add_argument("--resume",         type=Path,  default=None)
     ap.add_argument("--seed",           type=int,   default=42)
+    # Loss-weight knobs (default to V2DistillationLoss signature defaults).
+    # Set non-zero to let the user iterate on the smoke without code edits.
+    ap.add_argument("--lam-hard",       type=float, default=0.7)
+    ap.add_argument("--lam-kd-b",       type=float, default=0.5)
+    ap.add_argument("--lam-anchor",     type=float, default=1.0,
+                    help="Body-axis anchor (Identity_4) weight.  Smoke showed "
+                         "0.4 was too weak at effective batch 128 — student "
+                         "drifted from v1 and lower-body PA-MPJPE blew up.")
+    ap.add_argument("--lam-anchor-img", type=float, default=2.0,
+                    help="Image-frame v1 anchor (Identity) weight.  This is "
+                         "the load-bearing regularizer because Identity is "
+                         "what MediaPipe's downstream pose graph consumes.")
+    # LR scaling rule for DDP.  At effective batch 4×BATCH, the constant 5e-5
+    # was an overshoot in our smoke run (anchor loss rose 3.5×).  Sqrt scaling
+    # is the gentle middle ground; "none" preserves single-GPU behavior.
+    ap.add_argument("--lr-scale-rule",  choices=["none", "sqrt", "linear"],
+                    default="sqrt",
+                    help="Adjust --lr by f(world_size).  sqrt: lr×sqrt(N); "
+                         "linear: lr×N; none: unchanged.")
+    ap.add_argument("--variant-lr-scale", type=float, default=None,
+                    help="Multiplier on --lr for this variant.  Smoke showed "
+                         "Full regressed 5× more than Lite at the same LR; "
+                         "set to 0.5 for variant=full to compensate.")
     args = ap.parse_args()
 
     sys.stdout.reconfigure(line_buffering=True)
@@ -301,6 +324,21 @@ def main():
     is_main = (rank == 0)
 
     dtype  = torch.bfloat16 if (args.bf16 and device.type == "cuda") else torch.float32
+
+    # ── LR scaling for DDP effective batch + per-variant compensation ──
+    # Effective batch = world_size × BATCH.  Sqrt scaling is the standard
+    # patient-KD rule (vs linear which is too aggressive for small-LR KD).
+    base_lr = args.lr
+    if args.lr_scale_rule == "sqrt" and world_size > 1:
+        args.lr = base_lr * (world_size ** 0.5)
+    elif args.lr_scale_rule == "linear" and world_size > 1:
+        args.lr = base_lr * world_size
+    if args.variant_lr_scale is not None:
+        args.lr = args.lr * args.variant_lr_scale
+    if is_main and args.lr != base_lr:
+        print(f"[train] LR scaled: {base_lr:.2e} → {args.lr:.2e}  "
+              f"(rule={args.lr_scale_rule}, world_size={world_size}, "
+              f"variant_scale={args.variant_lr_scale})")
 
     if is_main:
         args.out_root.mkdir(parents=True, exist_ok=True)
@@ -422,11 +460,19 @@ def main():
     # ── Optim + sched + EMA ─────────────────────────────────────────────
     opt = torch.optim.AdamW(student.parameters(), lr=args.lr,
                             weight_decay=args.weight_decay)
-    # λ_anchor=0.4 (was 0.1): now per-joint masked, so the larger headline
-    # weight concentrates 5× harder on the 20 unsupervised BP joints (with
-    # the in-class mask), while the supervised joints see ~0.4 × 0.2 = 0.08
-    # which is below L_hard / L_kd_body so they're still teacher-driven.
-    loss_fn = V2DistillationLoss(lam_anchor=0.4)
+    # Loss weights from CLI (defaults match what the post-mortem of the
+    # smoke regression suggested: stronger anchor on both body-axis AND
+    # image-frame, slightly weaker hard so synth's MPFB-rig joint defs
+    # don't dominate v1's visual-landmark conventions).
+    loss_fn = V2DistillationLoss(
+        lam_hard       = args.lam_hard,
+        lam_kd_b       = args.lam_kd_b,
+        lam_anchor     = args.lam_anchor,
+        lam_anchor_img = args.lam_anchor_img,
+    )
+    if is_main:
+        print(f"[train] loss weights: hard={args.lam_hard}  kd_b={args.lam_kd_b}  "
+              f"anchor={args.lam_anchor}  anchor_img={args.lam_anchor_img}")
     # EMA shadow weights live only on rank 0 (DDP keeps replicas in sync, so
     # rank 0's copy is canonical).  Saves 3× memory on a 4-GPU box.
     ema = EMA(_unwrap(student), decay=args.ema_decay) if is_main else None
@@ -565,7 +611,9 @@ def main():
                 print(f"  [step {step}/{total_steps}]  total={loss.item():.4f}  "
                       f"hard={losses['L_hard'].item():.4f}  "
                       f"kd_b={losses['L_kd_body'].item():.4f}  "
-                      f"anchor={losses['L_anchor'].item():.4f}  lr={lr:.2e}")
+                      f"anc={losses['L_anchor'].item():.4f}  "
+                      f"anc_img={losses['L_anchor_img'].item():.4f}  "
+                      f"lr={lr:.2e}")
 
             # Periodic checkpoint (rank 0 only)
             if is_main and (time.time() - t_last_ckpt) > args.ckpt_every_min * 60:

@@ -208,14 +208,19 @@ class SynthDataset(Dataset):
         kp2d_full = np.asarray(rec["keypoints_2d"], dtype=np.float32)
         present17 = ((kp2d_full[:, 2] > 0).astype(np.float32) if kp2d_full.shape[1] >= 3
                      else np.ones(17, dtype=np.float32))
-        # Synth face KPs come from MPFB2 rig BONE heads/tails, NOT visual
-        # landmarks: nose ≈ face centre (not nose tip), ears ← eye-bone heads.
-        # BlazePose was trained with visual-landmark annotations; using these
-        # skeleton-anatomy KPs as hard supervision would inject a systematic
-        # 1-3 cm offset on face indices.  Mask COCO indices 0-4 (nose, eyes,
-        # ears) out of synth hard supervision; let Heavy KD cover face KPs
-        # via BP idx 0-10 (Heavy IS trained on visual-landmark style).
-        present17[0:5] = 0.0
+        # Synth KPs come from MPFB2 RIG BONE heads/tails, NOT visual
+        # landmarks.  BlazePose was trained with visual-landmark annotations,
+        # so using rig joints as hard supervision injects systematic offsets:
+        #   - face (COCO 0-4): nose ≈ face centre (not tip), ears ← eye bones
+        #   - hips (COCO 11-12): MPFB femoral-head vs BP visual-hip surface
+        #     (2-4 cm offset, documented in benchmark/results/RESULTS.md
+        #     where v1 hip PA-MPJPE bottoms at ~100 mm across all variants)
+        #   - knees (COCO 13-14): rig knee-bone joint vs BP visual centre
+        # Mask all of these; let teacher_body KD cover them via Heavy v1
+        # (which was trained on visual-landmark style).  This was the root
+        # cause of the smoke run regressing v2_full lower body by 60-125 mm.
+        present17[0:5] = 0.0    # face (nose, eyes, ears)
+        present17[11:15] = 0.0  # hips + knees
         kp17_2d_native = kp2d_full[:, :2].astype(np.float32)
         # Random horizontal flip with KP-pair swap (p=0.5).  Must be done
         # BEFORE the body-axis transform so the swapped KPs feed coords.py.

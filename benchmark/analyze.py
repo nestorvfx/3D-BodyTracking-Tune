@@ -427,8 +427,12 @@ def main() -> int:
 
     # -- (h) per-keypoint median + 95th-pct on intersection set ---------
     print("\n=== Per-keypoint PA-MPJPE on intersection (manual-only context) ===")
-    print(f"  {'joint':16s}  {'lite':>22s}  {'full':>22s}  {'heavy':>22s}")
-    print(f"  {' ':16s}  {'med  p95   N':>22s}  {'med  p95   N':>22s}  {'med  p95   N':>22s}")
+    col_w = 22
+    header = f"  {'joint':16s}  " + "  ".join(f"{v:>{col_w}s}" for v in args.variants)
+    sub_h  = f"  {' ':16s}  " + "  ".join(
+        f"{'med   p95    N':>{col_w}s}" for _ in args.variants)
+    print(header)
+    print(sub_h)
     per_kp = {v: {} for v in args.variants}
     for j in range(17):
         cells = []
@@ -444,7 +448,27 @@ def main() -> int:
             per_kp[v][COCO17[j]] = {"median_mm": med, "p95_mm": p95,
                                     "n": int(len(vals))}
             cells.append(f"{med:5.1f} {p95:5.1f} {len(vals):4d}")
-        print(f"  {COCO17[j]:16s}  {cells[0]:>22s}  {cells[1]:>22s}  {cells[2]:>22s}")
+        row = f"  {COCO17[j]:16s}  " + "  ".join(
+            f"{c:>{col_w}s}" for c in cells)
+        print(row)
+
+    # -- (i) TL;DR — head-to-head intersection PA-MPJPE per variant ------
+    # Lets us spot-check whether the v2 students beat or regress vs v1
+    # without parsing the JSON.  The number to track is the "scaled" mean.
+    print("\n=== TL;DR  (intersection scaled PA-MPJPE, mm; lower is better) ===")
+    for v in args.variants:
+        s = inter_stats[v]
+        marker = ""
+        # Compare v2 students against their v1 counterparts
+        if v == "student_v2_lite" and "lite" in inter_stats:
+            d = s["mean_mm"] - inter_stats["lite"]["mean_mm"]
+            marker = f"  Δ vs v1 lite: {d:+6.2f} mm  {'BETTER' if d < 0 else 'WORSE'}"
+        elif v == "student_v2_full" and "full" in inter_stats:
+            d = s["mean_mm"] - inter_stats["full"]["mean_mm"]
+            marker = f"  Δ vs v1 full: {d:+6.2f} mm  {'BETTER' if d < 0 else 'WORSE'}"
+        print(f"  {v:18s}  {s['mean_mm']:6.2f}  "
+              f"[95% CI {s['ci_lo_mm']:6.2f}-{s['ci_hi_mm']:6.2f}]  N={s['n']}"
+              f"{marker}")
 
     # -- save analysis.json ----------------------------------------------
     args.out.parent.mkdir(parents=True, exist_ok=True)
