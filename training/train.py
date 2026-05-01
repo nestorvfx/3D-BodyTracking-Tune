@@ -281,16 +281,39 @@ def main():
     ap.add_argument("--seed",           type=int,   default=42)
     # Loss-weight knobs (default to V2DistillationLoss signature defaults).
     # Set non-zero to let the user iterate on the smoke without code edits.
-    ap.add_argument("--lam-hard",       type=float, default=0.7)
+    ap.add_argument("--lam-hard",       type=float, default=0.3,
+                    help="Synth/egoexo hard sup.  Synth's MPFB-rig joint "
+                         "definitions are 1-4 cm off from BlazePose visual "
+                         "landmarks across most joints.  Keep this small so "
+                         "synth pulls only loosely; rely on anchor + KD.")
     ap.add_argument("--lam-kd-b",       type=float, default=0.5)
     ap.add_argument("--lam-anchor",     type=float, default=1.0,
                     help="Body-axis anchor (Identity_4) weight.  Smoke showed "
                          "0.4 was too weak at effective batch 128 — student "
                          "drifted from v1 and lower-body PA-MPJPE blew up.")
-    ap.add_argument("--lam-anchor-img", type=float, default=2.0,
+    ap.add_argument("--lam-anchor-img", type=float, default=5.0,
                     help="Image-frame v1 anchor (Identity) weight.  This is "
                          "the load-bearing regularizer because Identity is "
-                         "what MediaPipe's downstream pose graph consumes.")
+                         "what MediaPipe's downstream pose graph consumes. "
+                         "Bumped 2.0→5.0 after smoke 2 showed 2.0 wasn't "
+                         "enough to overcome Heavy-KD pulling student away "
+                         "from v1.")
+    ap.add_argument("--use-heavy-kd",   action="store_true",
+                    default=False,
+                    help="Distill body-axis from Heavy teacher.  DEFAULT OFF "
+                         "because Heavy is *worse* than v1 Full on Ego-Exo4D "
+                         "exo views (-5.6 mm; see benchmark/results/RESULTS.md). "
+                         "Distilling from Heavy on this benchmark drags the "
+                         "student toward Heavy's distribution-shift artefacts. "
+                         "Set USE_HEAVY_KD=1 to opt back in.")
+    ap.add_argument("--freeze-backbone", action="store_true", default=False,
+                    help="Freeze every CONV/DWCONV weight; only train heads "
+                         "(the small layers that produce Identity/Identity_4). "
+                         "Most conservative possible fine-tune — makes it "
+                         "very hard for the student to drift from v1 features. "
+                         "Use as a sanity check that the loss is wired right; "
+                         "or as the actual training mode if anchor-only KD "
+                         "isn't enough.")
     # LR scaling rule for DDP.  At effective batch 4×BATCH, the constant 5e-5
     # was an overshoot in our smoke run (anchor loss rose 3.5×).  Sqrt scaling
     # is the gentle middle ground; "none" preserves single-GPU behavior.
@@ -448,6 +471,35 @@ def main():
                                   persistent_workers=args.num_workers > 0,
                                   drop_last=True)
 
+    # ── Backbone freeze (optional, conservative-fine-tune mode) ─────────
+    if args.freeze_backbone:
+        n_frozen = n_train = 0
+        # The port stores conv/dwconv params under keys "conv_*_w/b" and
+        # "dwconv_*_w/b".  Heads (the small final layers producing Identity
+        # outputs) get the same naming scheme but are conventionally the LAST
+        # few CONV ops.  Simplest robust rule: freeze every param whose name
+        # starts with "conv_" or "dwconv_" *except* the last 4 op indices.
+        # The model is small enough (~70 conv ops in Lite) that this is a
+        # negligible head footprint vs the backbone.
+        # Find the highest op index per kind, retain trainable on top-4.
+        param_names = list(_unwrap(student).state_dict().keys())
+        op_indices = sorted({int(n.split("_")[1]) for n in param_names
+                             if n.startswith(("conv_", "dwconv_"))})
+        head_threshold = op_indices[-4] if len(op_indices) >= 4 else -1
+        for name, p in _unwrap(student).named_parameters():
+            if name.startswith(("conv_", "dwconv_")):
+                idx = int(name.split("_")[1])
+                if idx < head_threshold:
+                    p.requires_grad_(False)
+                    n_frozen += 1
+                else:
+                    n_train += 1
+            else:
+                n_train += 1
+        if is_main:
+            print(f"[train] freeze_backbone: {n_frozen} params frozen, "
+                  f"{n_train} trainable (head threshold op_idx={head_threshold})")
+
     # ── DDP wrap (after model is on device, before optimizer is built so the
     #              optimizer sees the wrapped params) ────────────────────────
     if is_dist:
@@ -532,11 +584,12 @@ def main():
                 "bp33_present":  batch["bp33_present"].to(device).to(dtype),
             }
 
-            # Body teacher: dataset always emits uniform keys (zero placeholders
-            # + per-sample `valid` flag) so default_collate works.  Loss gates
-            # on valid: invalid samples contribute zero loss/denominator.
+            # Body teacher: gated by --use-heavy-kd because Heavy is *worse*
+            # than v1 Full on this benchmark (-5.6 mm; see RESULTS.md).
+            # Default OFF — student gets supervision only from v1 anchor
+            # (image-frame + body-axis), hard targets, and multi-view.
             teacher_body = None
-            if "teacher_body_Identity" in batch:
+            if args.use_heavy_kd and "teacher_body_Identity" in batch:
                 tb_valid = batch["teacher_body_valid"].to(device).to(dtype)
                 if tb_valid.any():
                     teacher_body = {
@@ -544,7 +597,7 @@ def main():
                         "Identity_4": batch["teacher_body_Identity_4"].to(device).to(dtype),
                         "valid":      tb_valid,
                     }
-            elif teacher is not None:
+            elif args.use_heavy_kd and teacher is not None:
                 with torch.no_grad():
                     teacher_body = {k: v.detach()
                                     for k, v in teacher(img_weak).items()}
@@ -582,6 +635,17 @@ def main():
                              teacher_hand=teacher_hand,
                              anchor=anchor_out, multiview=multiview)
             loss = losses["total"]
+
+            # Step-1 sanity: confirm each component is firing or zero-by-design.
+            # Catches plumbing bugs like "anchor_img stays at 0" early.
+            if step == start_step + 1 and is_main:
+                print(f"  [diag] step-1 loss components:")
+                for k, v in losses.items():
+                    if k == "total": continue
+                    print(f"    {k:14s} = {v.item():.5f}")
+                print(f"    {'total':14s} = {loss.item():.5f}")
+                print(f"  [diag] heavy_kd={'on' if args.use_heavy_kd else 'OFF'}  "
+                      f"freeze_backbone={'on' if args.freeze_backbone else 'OFF'}")
 
             # NaN guard: skip optimizer step instead of polluting weights.
             # Print which loss component blew up the first 3 times we hit it.

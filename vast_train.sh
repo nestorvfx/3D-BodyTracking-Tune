@@ -66,23 +66,28 @@ TRAIN_LIMIT_FLAGS=()
 [ -n "${LIMIT_SYNTH:-}" ]  && TRAIN_LIMIT_FLAGS+=(--limit-synth  "$LIMIT_SYNTH")
 [ -n "${LIMIT_EGOEXO:-}" ] && TRAIN_LIMIT_FLAGS+=(--limit-egoexo "$LIMIT_EGOEXO")
 
-# Loss-weight + LR-rule knobs (env overrides — defaults match what the smoke
-# regression post-mortem suggested; see benchmark/results/analysis_v2.json).
-# Tweak these to iterate on small smokes before committing to the full run.
-LAM_HARD="${LAM_HARD:-0.7}"          # synth/egoexo hard supervision (was 1.0)
-LAM_KD_B="${LAM_KD_B:-0.5}"          # Heavy teacher body KD
-LAM_ANCHOR="${LAM_ANCHOR:-1.0}"      # body-axis v1 anchor (was 0.4)
-LAM_ANCHOR_IMG="${LAM_ANCHOR_IMG:-2.0}"  # image-frame v1 anchor (NEW, load-bearing)
-LR_RULE="${LR_RULE:-sqrt}"           # sqrt | linear | none — DDP scaling
+# Loss-weight + LR-rule knobs (env overrides).
+# Smoke 2 (after first SOTA-aim revision) was unchanged from smoke 1; root
+# cause: Heavy KD pulls toward Heavy's distribution, which is *worse* than
+# v1 Full on Ego-Exo4D exo views (-5.6 mm; benchmark/results/RESULTS.md).
+# New defaults: heavy KD off, image-frame anchor 5.0× to dominate, hard 0.3×
+# because synth's MPFB-rig joints have systematic 1-4 cm offset everywhere.
+LAM_HARD="${LAM_HARD:-0.3}"
+LAM_KD_B="${LAM_KD_B:-0.5}"
+LAM_ANCHOR="${LAM_ANCHOR:-1.0}"
+LAM_ANCHOR_IMG="${LAM_ANCHOR_IMG:-5.0}"
+USE_HEAVY_KD="${USE_HEAVY_KD:-0}"          # 0 = off (default); 1 = enable Heavy KD
+FREEZE_BACKBONE="${FREEZE_BACKBONE:-0}"    # 0 = full fine-tune; 1 = heads only
+LR_RULE="${LR_RULE:-sqrt}"
 WARMUP_STEPS="${WARMUP_STEPS:-1000}"
-# Per-variant LR multiplier — Full regressed 5× more than Lite at the same
-# LR in the smoke, so default it to 0.5× while leaving Lite at 1.0×.
 VARIANT_LR_LITE="${VARIANT_LR_LITE:-1.0}"
 VARIANT_LR_FULL="${VARIANT_LR_FULL:-0.5}"
 
 LOSS_FLAGS=(--lam-hard "$LAM_HARD" --lam-kd-b "$LAM_KD_B"
             --lam-anchor "$LAM_ANCHOR" --lam-anchor-img "$LAM_ANCHOR_IMG"
             --lr-scale-rule "$LR_RULE" --warmup-steps "$WARMUP_STEPS")
+[ "$USE_HEAVY_KD"    = "1" ] && LOSS_FLAGS+=(--use-heavy-kd)
+[ "$FREEZE_BACKBONE" = "1" ] && LOSS_FLAGS+=(--freeze-backbone)
 
 want_stage() { [ "$STAGE" = "all" ] || [ "$STAGE" = "$1" ]; }
 

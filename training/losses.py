@@ -82,12 +82,12 @@ class V2DistillationLoss(nn.Module):
     """
 
     def __init__(self,
-                 lam_hard:       float = 0.7,
+                 lam_hard:       float = 0.3,
                  lam_kd_b:       float = 0.5,
                  lam_kd_h:       float = 0.5,
                  lam_kd_f:       float = 0.3,
-                 lam_anchor:     float = 1.0,    # bumped 0.1→1.0 (was 0.4 hard-coded in train.py)
-                 lam_anchor_img: float = 2.0,    # NEW: image-frame v1 self-distillation
+                 lam_anchor:     float = 1.0,
+                 lam_anchor_img: float = 5.0,
                  lam_mv:         float = 0.2,
                  lam_vis:        float = 0.1,
                  beta_hard:      float = 0.05,
