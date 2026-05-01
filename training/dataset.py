@@ -133,15 +133,27 @@ def _attach_teacher_fields(item: dict, teach: dict | None) -> None:
 
 # ─── Optional augmentation hook ───────────────────────────────────────────
 
+# Process-global cache so SynthDataset + EgoExoTrainDataset (both constructed
+# with augment=True per rank) share ONE corpus instance instead of 2× per rank.
+# Combined with COW fork semantics, this means N ranks × 1 corpus ≈ 4× instead
+# of N ranks × 2 datasets × 1 corpus = 8× the augmentation memory footprint.
+# Smoke OOM at ~96 GB RAM was driven by this duplication.
+_AUG_CACHE: object = "unset"   # sentinel; None = "loaded but unavailable"
+
 def maybe_load_aug_corpus():
     """Return the Sim2RealAug instance, or None if unavailable.
-    Failure is non-fatal (we fall back to clean frames)."""
+    Failure is non-fatal (we fall back to clean frames).  Cached at module
+    level so multiple datasets in the same rank reuse the same memory."""
+    global _AUG_CACHE
+    if _AUG_CACHE != "unset":
+        return _AUG_CACHE
     try:
         from augment import build_default
-        return build_default()
+        _AUG_CACHE = build_default()
     except Exception as e:
         print(f"[dataset] aug disabled: {e}")
-        return None
+        _AUG_CACHE = None
+    return _AUG_CACHE
 
 
 # ─── Synth dataset (HF 500k + iter sanity set both supported) ─────────────
@@ -334,21 +346,35 @@ class EgoExoTrainDataset(Dataset):
     def __len__(self):
         return len(self.records)
 
+    # Cache size cap: per-worker memory, full corpus has ~864 takes; capping
+    # at 64 means each worker holds ~64 takes' worth of body GT JSON in memory
+    # at any time (LRU eviction).  Per-take body GT is ~1-5 MB → ≤320 MB cap
+    # per worker.  With 4 ranks × 2 dataloader workers = 8 workers × 320 MB =
+    # 2.5 GB total, vs unbounded growth that hit OOM at the previous run.
+    _CACHE_CAP = 64
+
     def _load_gt(self, uid: str) -> dict:
         if uid in self._gt_cache:
+            # Move-to-end (LRU): touch keeps it in cache
+            self._gt_cache[uid] = self._gt_cache.pop(uid)
             return self._gt_cache[uid]
         from lib.ego_exo_io import load_body_gt
         gt = load_body_gt(self.anno_root / "ego_pose" / "train" / "body" / "annotation"
                           / f"{uid}.json")
+        if len(self._gt_cache) >= self._CACHE_CAP:
+            self._gt_cache.pop(next(iter(self._gt_cache)))
         self._gt_cache[uid] = gt
         return gt
 
     def _load_cp(self, uid: str) -> dict:
         if uid in self._cp_cache:
+            self._cp_cache[uid] = self._cp_cache.pop(uid)
             return self._cp_cache[uid]
         from lib.ego_exo_io import load_camera_pose
         cp = load_camera_pose(self.anno_root / "ego_pose" / "train" / "camera_pose"
                               / f"{uid}.json")
+        if len(self._cp_cache) >= self._CACHE_CAP:
+            self._cp_cache.pop(next(iter(self._cp_cache)))
         self._cp_cache[uid] = cp
         return cp
 

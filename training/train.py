@@ -31,11 +31,18 @@ from pathlib import Path
 
 import torch
 import torch.distributed as dist
+import torch.multiprocessing as mp
 import torch.nn.functional as F
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
 from torch.utils.tensorboard import SummaryWriter
+
+# 'file_system' (vs default 'file_descriptor') avoids the per-process file-
+# descriptor exhaustion seen at NUM_WORKERS=4 with large augmentation corpora
+# being shared across workers via tensors in shared memory.  Negligible
+# perf impact, much safer for 4-rank × 4-worker dataloader pools.
+mp.set_sharing_strategy("file_system")
 
 
 def _unwrap(m: torch.nn.Module) -> torch.nn.Module:
