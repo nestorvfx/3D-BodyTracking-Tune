@@ -31,9 +31,11 @@ MARKER=/workspace/.bptune_setup_done
 [ -f "$MARKER" ] && { log "already set up — delete $MARKER to force"; exit 0; }
 
 # 1. System packages -----------------------------------------------------
+# Note: `awscli` was dropped from Ubuntu 24.04 apt repos; it's installed via
+# pip in step 3 (requirements.txt).  Don't apt-install it here.
 log "system packages"
 apt-get update -qq
-apt-get install -y -qq ffmpeg awscli rsync tmux git unzip curl jq libgl1 libglib2.0-0 >/dev/null
+apt-get install -y -qq ffmpeg rsync tmux git unzip curl jq libgl1 libglib2.0-0 >/dev/null
 
 # 2. Python + PyTorch ----------------------------------------------------
 log "python deps"
