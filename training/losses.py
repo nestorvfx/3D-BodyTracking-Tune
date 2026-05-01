@@ -173,11 +173,35 @@ class V2DistillationLoss(nn.Module):
             loss_terms["L_kd_face"] = smooth_l1_masked(
                 s_world[:, :33], tgt, full_mask, beta=self.beta_kd)
 
-        # ── 5) Anchor distillation against frozen v1 ──────────────────────
+        # ── 5) Anchor distillation (anti-regression vs frozen v1) ─────────
+        # Per-joint mask: weight is HIGHER on joints with no hard / no
+        # teacher signal (= the only thing keeping them from regressing).
+        # This is the load-bearing fix for the 20 BP joints not in the 17-COCO
+        # mapping — without it, λ_anchor=0.1 is too weak to dominate the
+        # side-effect gradients from supervised joints sharing backbone params.
         if anchor is not None:
             a_world = split_world_tuple(anchor["Identity_4"])
-            loss_terms["L_anchor"] = F.smooth_l1_loss(
-                s_world[:, :33], a_world[:, :33], beta=self.beta_kd)
+            B = s_world.shape[0]
+            supervised = torch.zeros(B, 33, device=s_world.device,
+                                     dtype=s_world.dtype)
+            if hard is not None:
+                supervised = torch.maximum(
+                    supervised,
+                    hard["bp33_present"].to(s_world).float())
+            if teacher_body is not None:
+                tb_kp = split_kp_tuple(teacher_body["Identity"])
+                supervised = torch.maximum(
+                    supervised,
+                    (tb_kp["visibility"][:, :33] > 0.1).float())
+            # 1.0 = unsupervised → strong anchor; 0.2 = supervised → light anchor
+            anchor_weight = torch.where(supervised > 0.5,
+                                        torch.tensor(0.2, device=supervised.device),
+                                        torch.tensor(1.0, device=supervised.device))
+            err = F.smooth_l1_loss(s_world[:, :33], a_world[:, :33],
+                                   beta=self.beta_kd, reduction="none").mean(-1)
+            # Weighted mean: numerator scales with weight, denominator stays B*33
+            loss_terms["L_anchor"] = (err * anchor_weight).sum() / max(
+                anchor_weight.sum().item(), 1.0)
 
         # ── 6) Multi-view 2D-reprojection consistency ─────────────────────
         if multiview is not None and self.lam_mv > 0:

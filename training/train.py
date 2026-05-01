@@ -97,6 +97,97 @@ def quick_val(student, anchor, val_loader, device, dtype) -> dict:
     return {"val_anchor_drift_m": float(sum(drift) / max(len(drift), 1))}
 
 
+@torch.no_grad()
+def benchmark_eval(student, device, dtype, max_takes: int = 5) -> dict:
+    """Run the SOTA benchmark on a small subset of frames.  Computes
+    PA-MPJPE-vs-Heavy-v1 — directly the metric we want to track training on.
+
+    Loads frames from `benchmark/frames/` (must already be extracted by
+    the benchmark pipeline; on Vast this is part of the held-out artefact)
+    and `benchmark/frames_manifest.json`.  Returns NaN-filled dict if the
+    benchmark isn't on disk yet — non-fatal."""
+    import sys, json, numpy as np, cv2
+    sys.path.insert(0, str(HERE.parent / "benchmark"))
+    BENCH = HERE.parent / "benchmark"
+    manifest_p = BENCH / "frames_manifest.json"
+    frames_root = BENCH / "frames"
+    anno_root = BENCH / "raw" / "annotations"
+    if not (manifest_p.exists() and frames_root.exists() and anno_root.exists()):
+        return {"bench_pa_mpjpe_mm": float("nan"),
+                "bench_n_frames": 0,
+                "bench_note": "no benchmark frames on disk"}
+    try:
+        from lib.ego_exo_io import load_body_gt, load_camera_pose, is_exo_cam
+        from lib.keypoint_map import gt_to_coco17, BP_INDEX_FOR_COCO, HIP_L, HIP_R
+        from lib.projection import world_to_cam
+        from lib.metrics import pa_mpjpe_per_frame, root_center
+        # Need body-axis transform too
+        sys.path.insert(0, str(HERE))
+        from coords import build_body_frame, cam_to_body
+    except Exception as e:
+        return {"bench_pa_mpjpe_mm": float("nan"),
+                "bench_n_frames": 0,
+                "bench_note": f"import failed: {e}"}
+    manifest = json.loads(manifest_p.read_text())
+    take_uids = sorted(manifest.keys())[:max_takes]
+    pa_errs_mm = []
+    for uid in take_uids:
+        cp = load_camera_pose(anno_root / "ego_pose/val/camera_pose" / f"{uid}.json")
+        gt = load_body_gt(anno_root / "ego_pose/val/body/annotation" / f"{uid}.json")
+        for cam_name, fidxs in manifest[uid].items():
+            cam = cp["cams"].get(cam_name)
+            if cam is None or not is_exo_cam(cam_name):
+                continue
+            for fi in fidxs[:3]:
+                jpg = frames_root / uid / cam_name / f"{int(fi):06d}.jpg"
+                if not jpg.exists():
+                    continue
+                entry = gt.get(int(fi))
+                if entry is None:
+                    continue
+                kp_w, present = gt_to_coco17(entry["annotation3D"])
+                if not (present[HIP_L] and present[HIP_R]):
+                    continue
+                img_bgr = cv2.imread(str(jpg))
+                # Resize to 256x256 for the student
+                if img_bgr.shape[:2] != (256, 256):
+                    img_bgr = cv2.resize(img_bgr, (256, 256))
+                img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
+                x = torch.from_numpy(img_rgb.astype(np.float32) / 255.0
+                                     ).permute(2, 0, 1)[None].to(device).to(dtype)
+                s_out = student(x)
+                pred33 = s_out["Identity_4"].view(1, 39, 3)[0, :33].cpu().float().numpy()
+                # GT in body-axis: project world→cam→body
+                gt_cam = world_to_cam(kp_w, cam["Rt"]).astype(np.float32)
+                R, origin = build_body_frame(gt_cam, present.astype(np.float32))
+                if R is None:
+                    continue
+                gt_body = cam_to_body(gt_cam, R, origin)
+                # Pad GT to 33 indices using BP_INDEX_FOR_COCO mapping
+                gt33 = np.zeros((33, 3), dtype=np.float32)
+                mask = np.zeros(33, dtype=bool)
+                for coco_idx, bp_idx in enumerate(BP_INDEX_FOR_COCO):
+                    if present[coco_idx]:
+                        gt33[bp_idx] = gt_body[coco_idx]
+                        mask[bp_idx] = True
+                if mask.sum() < 4:
+                    continue
+                # Per-frame PA-MPJPE on body-axis
+                P = pred33[None]
+                G = gt33[None]
+                M = mask[None]
+                pa = pa_mpjpe_per_frame(P, G, M)[0]
+                if not np.isnan(pa):
+                    pa_errs_mm.append(pa * 1000)
+    if not pa_errs_mm:
+        return {"bench_pa_mpjpe_mm": float("nan"),
+                "bench_n_frames": 0,
+                "bench_note": "no scorable frames"}
+    return {"bench_pa_mpjpe_mm": float(np.mean(pa_errs_mm)),
+            "bench_n_frames": len(pa_errs_mm),
+            "bench_note": "ok"}
+
+
 # ─── Main ─────────────────────────────────────────────────────────────────
 
 def main():
@@ -203,7 +294,11 @@ def main():
     # ── Optim + sched + EMA ─────────────────────────────────────────────
     opt = torch.optim.AdamW(student.parameters(), lr=args.lr,
                             weight_decay=args.weight_decay)
-    loss_fn = V2DistillationLoss()
+    # λ_anchor=0.4 (was 0.1): now per-joint masked, so the larger headline
+    # weight concentrates 5× harder on the 20 unsupervised BP joints (with
+    # the in-class mask), while the supervised joints see ~0.4 × 0.2 = 0.08
+    # which is below L_hard / L_kd_body so they're still teacher-driven.
+    loss_fn = V2DistillationLoss(lam_anchor=0.4)
     ema = EMA(student, decay=args.ema_decay)
     total_steps = len(train_loader) * args.epochs
 
@@ -241,13 +336,17 @@ def main():
             for g in opt.param_groups:
                 g["lr"] = lr
 
-            img = batch["image"].to(device).to(dtype)
+            # FixMatch-style: student gets the strong-aug crop, teacher / anchor
+            # get the weak-aug crop.  Same labels for both because the augs
+            # don't apply geometric transforms (only photometric + occluder paste).
+            img       = batch["image"].to(device).to(dtype)        # strong
+            img_weak  = batch.get("image_weak", batch["image"]).to(device).to(dtype)
             hard = {
                 "bp33_xyz_body": batch["bp33_xyz_body"].to(device).to(dtype),
                 "bp33_present":  batch["bp33_present"].to(device).to(dtype),
             }
 
-            # Build teacher_body dict from cache if available, else live Heavy
+            # Body teacher: cache hit OR live Heavy on the weak crop
             teacher_body = None
             if "teacher_body_Identity" in batch:
                 teacher_body = {
@@ -257,10 +356,10 @@ def main():
             elif teacher is not None:
                 with torch.no_grad():
                     teacher_body = {k: v.detach()
-                                    for k, v in teacher(img).items()}
+                                    for k, v in teacher(img_weak).items()}
 
             with torch.no_grad():
-                anchor_out = {k: v.detach() for k, v in anchor(img).items()}
+                anchor_out = {k: v.detach() for k, v in anchor(img_weak).items()}
 
             s_out = student(img)
             losses = loss_fn(s_out, hard=hard, teacher_body=teacher_body,
@@ -294,13 +393,18 @@ def main():
                 print(f"  [ckpt] -> {ckpt_path}")
                 t_last_ckpt = time.time()
 
-        # End-of-epoch validation
+        # End-of-epoch validation: anchor drift + actual benchmark PA-MPJPE
         student.eval()
         val_metrics = quick_val(student, anchor, val_loader, device, dtype)
-        for k, v in val_metrics.items():
-            writer.add_scalar(f"val/{k}", v, step)
+        bench_metrics = benchmark_eval(student, device, dtype, max_takes=5)
+        all_metrics = {**val_metrics, **bench_metrics}
+        for k, v in all_metrics.items():
+            if isinstance(v, (int, float)):
+                writer.add_scalar(f"val/{k}", v, step)
         student.train()
-        print(f"  === epoch {epoch+1}/{args.epochs} val: {val_metrics}")
+        print(f"  === epoch {epoch+1}/{args.epochs}  drift={val_metrics['val_anchor_drift_m']:.4f}  "
+              f"BENCH_PA_MPJPE={bench_metrics['bench_pa_mpjpe_mm']:.1f} mm  "
+              f"(N={bench_metrics['bench_n_frames']}, {bench_metrics['bench_note']})")
 
     # Final save
     final = args.out_root / f"{args.variant}_final.pt"

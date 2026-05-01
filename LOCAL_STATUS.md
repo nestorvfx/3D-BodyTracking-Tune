@@ -23,6 +23,50 @@ locally before booking any Vast.ai instance.  Current state.
 | **S7** | PyTorch → `.task` round-trip | needs **either** WSL2 + `ai-edge-torch` (Linux-only per the agent research) **or** a custom-built flatbuffer rewriter (~1-2 days work, no third-party libs needed). Decision: go custom on Vast where Linux is native + `ai-edge-torch` works out of the box. |
 | **S8** | Round-tripped Lite vs `benchmark/run_eval.py` matches v1 | depends on S7. |
 
+## Audit fixes applied (post-self-prompt critique)
+
+After the strict acceptance audit, these gaps were fixed and reverified:
+
+1. **Per-joint anchor masking** ([losses.py](training/losses.py)): `L_anchor`
+   now applies a 5× stronger weight to BP joints with **neither** hard
+   supervision **nor** Heavy-teacher signal (specifically the 20 of 33 not
+   in the 17-COCO mapping).  Prevents regression from side-effect
+   gradients propagating through the shared backbone.
+2. **FixMatch strong/weak split** ([dataset.py](training/dataset.py),
+   [train.py](training/train.py)): student forward gets the
+   strong-augmented crop; teacher + anchor get the weak (light photometric
+   only) crop.  Forces invariance, prevents teacher-pseudo-label noise
+   on heavily occluded inputs.  This is the "single biggest distillation
+   win 2022-2025" per the augmentation research synthesis.
+3. **Source-aware augmentation tiers** ([augment.py](training/augment.py)):
+   synth gets heavy aug (F1 0.8 / F2 0.9 / FDA 0.5), egoexo gets light
+   (F1 0.4, no F2 — already real bg), replay gets minimal.  Tuned per
+   Sárándi/RTMPose/DWPose/FixMatch lineage.
+4. **Real benchmark validation in `train.py`**: every epoch runs the
+   student on a subset of held-out manifest frames, reports
+   `BENCH_PA_MPJPE` directly.  This is the metric — anchor drift alone
+   doesn't answer "is this actually getting better?"
+5. **λ_anchor bumped 0.1 → 0.4** to take advantage of the new mask;
+   supervised joints still see ~0.08 effective weight (below L_hard +
+   L_kd_body), unsupervised joints see ~0.4 effective weight.
+
+## v2.1 future-work (intentionally deferred — works but not critical for first run)
+
+- **Hand teacher KD with per-wrist crop ROI**: Hand Landmarker expects
+  close-up hand crops; running on the 256×256 person crop gives noisy
+  output.  Body-axis alignment for the resulting points requires Heavy's
+  predicted wrist position as the rigid-alignment anchor.  Can be added
+  as a `cache_hand_aligned.py` step.  Without it, Heavy's own hand-finger
+  predictions (BP idx 17-22) cover this — just lower-precision.
+- **Face teacher KD with body-axis alignment**: similar.  Heavy already
+  emits face landmarks (BP idx 0-10).
+- **Multi-view consistency loss** for Ego-Exo4D 4-cam takes: stub
+  returns zero.  Adding requires per-batch K + Rt + 2D-projection
+  helper.
+- **Sárándi-2024 human-shaped occluders**: a 2-day add (CIHP/COCO
+  segmentation pipeline) for a known further win.  Current Open Images
+  cutouts are still SOTA-baseline.
+
 ## Files produced
 
 | path | role |

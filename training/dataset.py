@@ -53,20 +53,11 @@ def pad_to_square_256(img_bgr: np.ndarray) -> tuple[np.ndarray, int, int]:
 # ─── Optional augmentation hook ───────────────────────────────────────────
 
 def maybe_load_aug_corpus():
-    """Return the F1/F2 augmenter from tooling/, or None if unavailable.
+    """Return the Sim2RealAug instance, or None if unavailable.
     Failure is non-fatal (we fall back to clean frames)."""
     try:
-        TOOLING = HERE.parent / "tooling"
-        if not (TOOLING / "sim2real_aug.py").exists():
-            return None
-        sys.path.insert(0, str(TOOLING))
-        from sim2real_aug import Sim2RealAug                      # type: ignore
-        refs = HERE.parent / "assets" / "sim2real_refs"
-        if not (refs / "occluders").exists():
-            return None
-        return Sim2RealAug(occluders_dir=str(refs / "occluders"),
-                           bg_dir=str(refs / "bg"),
-                           fda_dir=str(refs / "fda"))
+        from augment import build_default
+        return build_default()
     except Exception as e:
         print(f"[dataset] aug disabled: {e}")
         return None
@@ -127,19 +118,25 @@ class SynthDataset(Dataset):
                      else np.ones(17, dtype=np.float32))
         bp33_xyz_body, bp33_present = hard_target_in_body_axis(kp17_cam, present17)
 
-        # Optional augmentation (after teacher cache lookup so caches stay valid)
+        # FixMatch-style strong/weak split: student gets the strong-aug crop,
+        # teacher + anchor get the weak crop.  Both share identity (no
+        # geometric jitter), so 3-D KP targets remain valid for both.
         if self.aug is not None:
             try:
-                img_padded = self.aug(img_padded)   # in-place style sim2real
+                img_strong = self.aug(img_padded.copy(), source="synth", strong=True)
+                img_weak   = self.aug(img_padded.copy(), source="synth", strong=False)
             except Exception:
-                pass    # silent fallback to clean
+                img_strong = img_weak = img_padded
+        else:
+            img_strong = img_weak = img_padded
 
-        img_rgb = cv2.cvtColor(img_padded, cv2.COLOR_BGR2RGB)
-        img_t = torch.from_numpy(img_rgb.astype(np.float32) / 255.0
-                                 ).permute(2, 0, 1)
+        def _to_tensor(b):
+            rgb = cv2.cvtColor(b, cv2.COLOR_BGR2RGB)
+            return torch.from_numpy(rgb.astype(np.float32) / 255.0).permute(2, 0, 1)
 
         item: dict[str, Any] = {
-            "image":          img_t,
+            "image":          _to_tensor(img_strong),     # student input
+            "image_weak":     _to_tensor(img_weak),       # teacher / anchor input
             "bp33_xyz_body":  torch.from_numpy(bp33_xyz_body),
             "bp33_present":   torch.from_numpy(bp33_present),
             "sample_id":      rec["id"],
@@ -233,17 +230,21 @@ class EgoExoTrainDataset(Dataset):
 
         if self.aug is not None:
             try:
-                img_padded = self.aug(img_padded)
+                img_strong = self.aug(img_padded.copy(), source="egoexo", strong=True)
+                img_weak   = self.aug(img_padded.copy(), source="egoexo", strong=False)
             except Exception:
-                pass
+                img_strong = img_weak = img_padded
+        else:
+            img_strong = img_weak = img_padded
 
-        img_rgb = cv2.cvtColor(img_padded, cv2.COLOR_BGR2RGB)
-        img_t = torch.from_numpy(img_rgb.astype(np.float32) / 255.0
-                                 ).permute(2, 0, 1)
+        def _to_tensor(b):
+            rgb = cv2.cvtColor(b, cv2.COLOR_BGR2RGB)
+            return torch.from_numpy(rgb.astype(np.float32) / 255.0).permute(2, 0, 1)
 
         sample_id = f"{uid}__{cam}__{fi:06d}"
         item: dict[str, Any] = {
-            "image":          img_t,
+            "image":          _to_tensor(img_strong),
+            "image_weak":     _to_tensor(img_weak),
             "bp33_xyz_body":  torch.from_numpy(bp33_xyz_body),
             "bp33_present":   torch.from_numpy(bp33_present),
             "sample_id":      sample_id,
