@@ -40,20 +40,31 @@ from port import BlazePosePort, load_task   # noqa: E402
 
 def export_via_ai_edge_torch(student: BlazePosePort, out_tflite: Path,
                               sample_input: torch.Tensor) -> bool:
-    """Returns True on success; False if module not available or export fails."""
-    try:
-        import ai_edge_torch                                    # type: ignore
-    except Exception as e:
-        print(f"[export] ai_edge_torch unavailable ({e}); falling back to custom")
+    """Returns True on success; False if module not available or export fails.
+
+    Tries `litert_torch` (current Google name, Apr-2026+) first, then falls
+    back to the deprecated `ai_edge_torch` package, then signals failure
+    so the caller drops to the custom flatbuffer rewriter.
+    """
+    converter = None
+    for mod_name in ("litert_torch", "ai_edge_torch"):
+        try:
+            converter = __import__(mod_name)
+            print(f"[export] using {mod_name} ({getattr(converter, '__version__', '?')})")
+            break
+        except Exception as e:
+            print(f"[export] {mod_name} not available ({type(e).__name__}: {e})")
+    if converter is None:
+        print("[export] no Google converter installed; falling back to custom rewriter")
         return False
     try:
         student.eval()
-        edge = ai_edge_torch.convert(student, (sample_input,))
+        edge = converter.convert(student, (sample_input,))
         edge.export(str(out_tflite))
-        print(f"[export] ai_edge_torch wrote {out_tflite}")
+        print(f"[export] converter wrote {out_tflite}")
         return True
     except Exception as e:
-        print(f"[export] ai_edge_torch failed: {e}; falling back to custom")
+        print(f"[export] converter failed: {e}; falling back to custom rewriter")
         return False
 
 
