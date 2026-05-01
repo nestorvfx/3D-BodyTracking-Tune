@@ -143,6 +143,17 @@ if want_stage 1 && [ ! -f /data/synth/labels.jsonl ]; then
 fi
 
 # 2. Ego-Exo4D ---------------------------------------------------------
+# IDEMPOTENT: extract_egoexo_train.py classifies takes as needs_fetch vs
+# already_extracted on every run, so re-running this stage just downloads
+# the takes that aren't on disk yet.  Used for both initial extraction
+# (smoke = 50 takes) and later expansion to full corpus (3072 takes).
+#
+# Knobs:
+#   EGOEXO_LIMIT_TAKES=N   cap takes for mid-scale runs (e.g. 1000).
+#                          Empty/unset = full corpus (~3072 takes, 3-6 hr).
+#                          FAST=1 forces 50 (smoke).
+#   EGOEXO_BATCH=200       takes per egoexo CLI call (peak ~30 GB transient).
+#   EGOEXO_WORKERS=32      parallel S3 download workers (egoexo default 15).
 if want_stage 2; then
     if [ ! -d /data/egoexo/annotations ]; then
         log "stage 2a: pull Ego-Exo4D train annotations"
@@ -150,22 +161,23 @@ if want_stage 2; then
                --parts annotations metadata \
                --benchmarks egopose --splits train -y
     fi
-    if [ ! -f /data/egoexo/manifest_train.jsonl ]; then
-        log "stage 2b: batched-bulk download + extract Ego-Exo4D train frames"
-        EXTRA=()
-        [ -n "${FAST:-}" ] && EXTRA+=(--limit-takes 50)
-        # Default batch=200 takes/call (~30 GB peak transient).  For FAST=1
-        # smoke (50 takes) we can fit all in one batch — set higher for full.
-        EE_BATCH="${EGOEXO_BATCH:-200}"
-        EE_WORKERS="${EGOEXO_WORKERS:-32}"
-        python3 prep/extract_egoexo_train.py \
-            --anno-root /data/egoexo/annotations \
-            --raw-root /data/egoexo \
-            --frames-root /data/egoexo/frames \
-            --manifest-out /data/egoexo/manifest_train.jsonl \
-            --batch-size "$EE_BATCH" --num-workers "$EE_WORKERS" \
-            "${EXTRA[@]}"
+    log "stage 2b: batched-bulk download + extract Ego-Exo4D train frames"
+    log "         (idempotent — already-extracted takes are skipped)"
+    EXTRA=()
+    if [ -n "${FAST:-}" ]; then
+        EXTRA+=(--limit-takes 50)
+    elif [ -n "${EGOEXO_LIMIT_TAKES:-}" ]; then
+        EXTRA+=(--limit-takes "$EGOEXO_LIMIT_TAKES")
     fi
+    EE_BATCH="${EGOEXO_BATCH:-200}"
+    EE_WORKERS="${EGOEXO_WORKERS:-32}"
+    python3 prep/extract_egoexo_train.py \
+        --anno-root /data/egoexo/annotations \
+        --raw-root /data/egoexo \
+        --frames-root /data/egoexo/frames \
+        --manifest-out /data/egoexo/manifest_train.jsonl \
+        --batch-size "$EE_BATCH" --num-workers "$EE_WORKERS" \
+        "${EXTRA[@]}"
 fi
 
 # 3. Teacher cache -----------------------------------------------------
