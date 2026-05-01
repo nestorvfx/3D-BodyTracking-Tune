@@ -358,12 +358,34 @@ def main():
                     teacher_body = {k: v.detach()
                                     for k, v in teacher(img_weak).items()}
 
+            # Hand teacher: only fires when the cache holds Sárándi-aligned values
+            teacher_hand = None
+            if "teacher_hand_xyz" in batch:
+                teacher_hand = {
+                    "bp33_xyz_body": batch["teacher_hand_xyz"].to(device).to(dtype),
+                    "bp33_present":  batch["teacher_hand_present"].to(device).to(dtype),
+                }
+
             with torch.no_grad():
                 anchor_out = {k: v.detach() for k, v in anchor(img_weak).items()}
 
+            # Multi-view reprojection inputs (Ego-Exo4D samples carry these;
+            # synth samples have mv_valid=0 → loss zeros out).
+            multiview = None
+            if "mv_valid" in batch:
+                multiview = {
+                    "mv_valid":      batch["mv_valid"],
+                    "mv_K_norm":     batch["mv_K_norm"],
+                    "mv_R_body2cam": batch["mv_R_body2cam"],
+                    "mv_origin_cam": batch["mv_origin_cam"],
+                    "mv_kp2d_norm":  batch["mv_kp2d_norm"],
+                    "mv_present_2d": batch["mv_present_2d"],
+                }
+
             s_out = student(img)
             losses = loss_fn(s_out, hard=hard, teacher_body=teacher_body,
-                             anchor=anchor_out)
+                             teacher_hand=teacher_hand,
+                             anchor=anchor_out, multiview=multiview)
             loss = losses["total"]
             opt.zero_grad(set_to_none=True)
             loss.backward()

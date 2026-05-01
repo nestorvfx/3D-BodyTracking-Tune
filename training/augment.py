@@ -58,6 +58,18 @@ class Sim2RealAug:
             self.occluders = []
         else:
             self.occluders = load_occluders_from_dir(occ_dir)
+        # Sárándi-2024 update: also load human-shaped occluders if present.
+        # These are MORE punishing for pose models (similar texture statistics
+        # to the target person, blurs the foreground/background separation
+        # that pure-object occluders make easy).
+        human_dir = occ_dir.parent / "occluders_human"
+        if human_dir.exists():
+            try:
+                hu = load_occluders_from_dir(human_dir)
+                self.occluders.extend(hu)
+                print(f"[augment] +{len(hu)} human-shaped occluders (Sárándi-2024)")
+            except Exception as e:
+                print(f"[augment] human occluders skipped: {e}")
         if bg_dir and Path(bg_dir).exists():
             self.bg_corpus = load_bg_corpus(bg_dir)
         else:
@@ -71,19 +83,17 @@ class Sim2RealAug:
 
         # Per-source probabilities — tuned per the SOTA recommendation
         # (research synthesis on commercial-clean BlazePose distillation,
-        # Sárándi/RTMPose/DWPose/FixMatch lineage, 2024-2026):
-        #   - synth:  heavy aug — needed to bridge sim-real gap (F1 0.8, F2 0.9, FDA 0.5)
-        #   - egoexo: light aug — already realistic, NEVER bg-comp real frames
-        #   - replay: minimal aug — preserve v1 distribution for anti-regression
-        # Plus a "weak" tier per source for FixMatch-style strong/weak split:
-        # the teacher sees the weak crop, the student sees the strong crop.
+        # Sárándi/RTMPose/DWPose/FixMatch lineage, 2024-2026).
         self.cfg = {
-            "synth":  {"p_bg": 0.9, "p_occ": 0.8, "p_fda": 0.5, "p_photo": 1.0,
-                       "photo_strength": "strong",  "p_jpeg": 0.3},
-            "egoexo": {"p_bg": 0.0, "p_occ": 0.4, "p_fda": 0.0, "p_photo": 0.5,
-                       "photo_strength": "light",   "p_jpeg": 0.15},
-            "replay": {"p_bg": 0.0, "p_occ": 0.1, "p_fda": 0.0, "p_photo": 0.3,
-                       "photo_strength": "minimal", "p_jpeg": 0.0},
+            "synth":  {"p_bg": 0.9, "p_occ": 0.8, "p_fda": 0.5,
+                       "p_photo": 1.0, "photo_strength": "strong",
+                       "p_jpeg": 0.30, "p_blur": 0.40},
+            "egoexo": {"p_bg": 0.0, "p_occ": 0.4, "p_fda": 0.0,
+                       "p_photo": 0.5, "photo_strength": "light",
+                       "p_jpeg": 0.15, "p_blur": 0.15},
+            "replay": {"p_bg": 0.0, "p_occ": 0.1, "p_fda": 0.0,
+                       "p_photo": 0.3, "photo_strength": "minimal",
+                       "p_jpeg": 0.0,  "p_blur": 0.05},
         }
         # Weak variant of each (just light photometric, no occluders/bg/fda):
         self.cfg_weak = {
@@ -97,14 +107,14 @@ class Sim2RealAug:
     # ------------- photometric (in-place, BGR uint8) ----------------------
     def _photometric(self, img: np.ndarray, strength: str) -> np.ndarray:
         if strength == "minimal":
-            jb, jc, ns = 0.05, 0.05, 0.0
+            jb, jc, js, jh, ns = 0.05, 0.05, 0.05, 0.02, 0.0
         elif strength == "light":
-            jb, jc, ns = 0.15, 0.15, 0.005
+            jb, jc, js, jh, ns = 0.15, 0.15, 0.10, 0.03, 0.005
         else:  # strong
-            jb, jc, ns = 0.3, 0.3, 0.01
+            jb, jc, js, jh, ns = 0.30, 0.30, 0.15, 0.05, 0.01
         # Brightness
         if jb > 0:
-            delta = (random.uniform(-jb, jb) * 255)
+            delta = random.uniform(-jb, jb) * 255
             img = np.clip(img.astype(np.float32) + delta, 0, 255).astype(np.uint8)
         # Contrast
         if jc > 0:
@@ -112,11 +122,48 @@ class Sim2RealAug:
             mean = img.mean(axis=(0, 1), keepdims=True)
             img = np.clip((img.astype(np.float32) - mean) * f + mean,
                           0, 255).astype(np.uint8)
-        # Noise (Gaussian in pixel-units)
+        # Saturation + hue (HSV space)
+        if js > 0 or jh > 0:
+            hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV).astype(np.float32)
+            if jh > 0:
+                hsv[..., 0] = (hsv[..., 0] + random.uniform(-jh, jh) * 180) % 180
+            if js > 0:
+                hsv[..., 1] = np.clip(
+                    hsv[..., 1] * (1.0 + random.uniform(-js, js)), 0, 255)
+            img = cv2.cvtColor(hsv.astype(np.uint8), cv2.COLOR_HSV2BGR)
+        # Gaussian noise
         if ns > 0:
             noise = np.random.normal(0, ns * 255, img.shape).astype(np.float32)
             img = np.clip(img.astype(np.float32) + noise, 0, 255).astype(np.uint8)
         return img
+
+    # ------------- motion blur (synth has none, real does) ---------------
+    @staticmethod
+    def _motion_blur(img: np.ndarray, k_min: int = 3, k_max: int = 7) -> np.ndarray:
+        k = random.randint(k_min, k_max)
+        if k % 2 == 0:
+            k += 1
+        kernel = np.zeros((k, k), dtype=np.float32)
+        # Random direction
+        angle = random.uniform(0, np.pi)
+        cx, cy = k // 2, k // 2
+        dx, dy = np.cos(angle), np.sin(angle)
+        for i in range(k):
+            x = int(cx + (i - k // 2) * dx)
+            y = int(cy + (i - k // 2) * dy)
+            if 0 <= x < k and 0 <= y < k:
+                kernel[y, x] = 1.0
+        kernel /= kernel.sum() if kernel.sum() > 0 else 1.0
+        return cv2.filter2D(img, -1, kernel)
+
+    # ------------- JPEG quality jitter (real frames are re-encoded; synth isn't) ---
+    @staticmethod
+    def _jpeg_jitter(img: np.ndarray, q_min: int = 40, q_max: int = 95) -> np.ndarray:
+        q = random.randint(q_min, q_max)
+        ok, enc = cv2.imencode(".jpg", img, [int(cv2.IMWRITE_JPEG_QUALITY), q])
+        if not ok:
+            return img
+        return cv2.imdecode(enc, cv2.IMREAD_COLOR)
 
     # ------------- entry point --------------------------------------------
     def __call__(self, img_bgr: np.ndarray, source: str = "synth",
@@ -158,9 +205,18 @@ class Sim2RealAug:
             except Exception:
                 pass
 
-        # Photometric (always last, applies to occluders too)
+        # Motion blur (real GoPros have it, synth is sharp — closes domain gap)
+        if cfg.get("p_blur", 0) > 0 and random.random() < cfg["p_blur"]:
+            img_bgr = self._motion_blur(img_bgr)
+
+        # Photometric (always last so it applies to occluders too)
         if random.random() < cfg["p_photo"]:
             img_bgr = self._photometric(img_bgr, cfg["photo_strength"])
+
+        # JPEG quality jitter (Ego-Exo4D is re-encoded h264→jpg; synth is
+        # lossless PNG — easiest sim-real domain tell)
+        if cfg.get("p_jpeg", 0) > 0 and random.random() < cfg["p_jpeg"]:
+            img_bgr = self._jpeg_jitter(img_bgr)
 
         return img_bgr
 

@@ -35,6 +35,31 @@ from lib.keypoint_map import COCO17, BP_INDEX_FOR_COCO, HIP_L, HIP_R
 from coords import hard_target_in_body_axis
 
 
+# COCO-17 left↔right pairs for horizontal-flip KP swap
+COCO17_LR_PAIRS = [(1, 2), (3, 4), (5, 6), (7, 8), (9, 10),
+                   (11, 12), (13, 14), (15, 16)]
+
+
+def hflip_with_kp_swap(img_bgr: np.ndarray, kp17_cam: np.ndarray,
+                       kp17_2d: np.ndarray, present17: np.ndarray):
+    """Horizontal flip: mirror image AND swap L/R keypoint pairs AND
+    negate cam-frame X.  Returns the flipped (img, kp_cam, kp_2d)."""
+    img = cv2.flip(img_bgr, 1)
+    H, W = img.shape[:2]
+    # Flip cam-frame X (since X-right became X-left after image flip)
+    kp17_cam_f = kp17_cam.copy()
+    kp17_cam_f[:, 0] *= -1.0
+    # Flip 2D x
+    kp17_2d_f = kp17_2d.copy()
+    kp17_2d_f[:, 0] = (W - 1) - kp17_2d_f[:, 0]
+    # Swap L/R pairs
+    for a, b in COCO17_LR_PAIRS:
+        kp17_cam_f[[a, b]] = kp17_cam_f[[b, a]]
+        kp17_2d_f[[a, b]]  = kp17_2d_f[[b, a]]
+        present17[[a, b]]  = present17[[b, a]]
+    return img, kp17_cam_f, kp17_2d_f, present17
+
+
 # ─── 256×256 letterbox ────────────────────────────────────────────────────
 
 def pad_to_square_256(img_bgr: np.ndarray) -> tuple[np.ndarray, int, int]:
@@ -113,10 +138,38 @@ class SynthDataset(Dataset):
 
         # Hard supervision: 17-COCO cam metres → BP-33 body-axis
         kp17_cam = np.asarray(rec["keypoints_3d_cam"], dtype=np.float32)
-        kp2d = np.asarray(rec["keypoints_2d"], dtype=np.float32)
-        present17 = ((kp2d[:, 2] > 0).astype(np.float32) if kp2d.shape[1] >= 3
+        kp2d_full = np.asarray(rec["keypoints_2d"], dtype=np.float32)
+        present17 = ((kp2d_full[:, 2] > 0).astype(np.float32) if kp2d_full.shape[1] >= 3
                      else np.ones(17, dtype=np.float32))
+        kp17_2d_native = kp2d_full[:, :2].astype(np.float32)
+        # Random horizontal flip with KP-pair swap (p=0.5).  Must be done
+        # BEFORE the body-axis transform so the swapped KPs feed coords.py.
+        if random.random() < 0.5:
+            img_padded, kp17_cam, kp17_2d_native, present17 = hflip_with_kp_swap(
+                img_padded, kp17_cam, kp17_2d_native, present17.copy())
         bp33_xyz_body, bp33_present = hard_target_in_body_axis(kp17_cam, present17)
+
+        # Multi-view consistency: synth has its own K + GT 2D so the same loss
+        # applies.  Normalise to [0,1] image-frac coords.
+        from coords import build_body_frame
+        K_native = np.asarray(rec["camera_K"], dtype=np.float32)
+        R_cam2body, _origin = build_body_frame(kp17_cam, present17)
+        if R_cam2body is None:
+            R_body2cam = np.zeros((3, 3), dtype=np.float32)
+            origin_cam_ = np.zeros(3, dtype=np.float32)
+            mv_valid = 0.0
+        else:
+            R_body2cam = R_cam2body.T.astype(np.float32)
+            origin_cam_ = _origin.astype(np.float32)
+            mv_valid = 1.0
+        W_native = max(2.0 * float(K_native[0, 2]), 1.0)
+        H_native = max(2.0 * float(K_native[1, 2]), 1.0)
+        K_norm = K_native.copy()
+        K_norm[0, :] /= W_native
+        K_norm[1, :] /= H_native
+        kp17_2d_norm = kp17_2d_native.copy()
+        kp17_2d_norm[:, 0] /= W_native
+        kp17_2d_norm[:, 1] /= H_native
 
         # FixMatch-style strong/weak split: student gets the strong-aug crop,
         # teacher + anchor get the weak crop.  Both share identity (no
@@ -141,6 +194,13 @@ class SynthDataset(Dataset):
             "bp33_present":   torch.from_numpy(bp33_present),
             "sample_id":      rec["id"],
             "source":         "synth",
+            # Multi-view consistency (uniform across synth + egoexo so MixedDataset works)
+            "mv_valid":       torch.tensor(mv_valid, dtype=torch.float32),
+            "mv_K_norm":      torch.from_numpy(K_norm.astype(np.float32)),
+            "mv_R_body2cam":  torch.from_numpy(R_body2cam),
+            "mv_origin_cam":  torch.from_numpy(origin_cam_),
+            "mv_kp2d_norm":   torch.from_numpy(kp17_2d_norm.astype(np.float32)),
+            "mv_present_2d":  torch.from_numpy(present17.astype(np.float32)),
         }
         teach = self._load_teacher(rec["id"])
         if teach is not None and "world33" in teach:
@@ -153,6 +213,12 @@ class SynthDataset(Dataset):
             img39[:33] = img33
             item["teacher_body_Identity"]   = torch.from_numpy(img39.flatten())
             item["teacher_body_Identity_4"] = torch.from_numpy(world39.flatten())
+            # Hand teacher targets (BP idx 17-22): body-axis-aligned by cache_teachers
+            if "hand_bp33_xyz_body" in teach:
+                item["teacher_hand_xyz"]     = torch.from_numpy(
+                    teach["hand_bp33_xyz_body"].astype(np.float32))
+                item["teacher_hand_present"] = torch.from_numpy(
+                    teach["hand_bp33_present"].astype(np.float32))
         return item
 
 
@@ -211,22 +277,79 @@ class EgoExoTrainDataset(Dataset):
         img_bgr = cv2.imread(str(img_path))
         if img_bgr is None:
             raise FileNotFoundError(img_path)
-        img_padded, _, _ = pad_to_square_256(img_bgr)
+        H_in, W_in = img_bgr.shape[:2]
+        img_padded, pad_h, pad_w = pad_to_square_256(img_bgr)
 
         # Hard target: world GT → cam → body-axis
         gt = self._load_gt(uid).get(fi)
         present17 = np.zeros(17, dtype=np.float32)
         kp17_cam  = np.zeros((17, 3), dtype=np.float32)
+        kp17_2d   = np.zeros((17, 2), dtype=np.float32)
+        present17_2d = np.zeros(17, dtype=np.float32)
+        K_native = np.eye(3, dtype=np.float32)
+        Rt_cam   = np.zeros((3, 4), dtype=np.float32)
         if gt is not None:
             from lib.keypoint_map import gt_to_coco17
             from lib.projection import world_to_cam
-            kp_w, present17 = gt_to_coco17(gt["annotation3D"])
+            kp_w, present17_b = gt_to_coco17(gt["annotation3D"])
+            present17 = present17_b.astype(np.float32)
             cp = self._load_cp(uid)
             cam_data = cp["cams"].get(cam)
             if cam_data is not None:
                 kp17_cam = world_to_cam(kp_w, cam_data["Rt"]).astype(np.float32)
+                K_native = cam_data["K"].astype(np.float32)
+                Rt_cam   = cam_data["Rt"].astype(np.float32)
+                ann2d = gt.get("annotation2D", {}).get(cam, {})
+                for j_idx, jname in enumerate(COCO17):
+                    a = ann2d.get(jname)
+                    if a is not None:
+                        kp17_2d[j_idx] = (a["x"], a["y"])
+                        present17_2d[j_idx] = 1.0 if a.get("placement") == "manual" else 0.5
+
+        # Random horizontal flip (BEFORE body-axis transform).  Note: we have
+        # to flip in PADDED pixel space because that's the image we feed the net.
+        # 2-D coords from `annotation2D` are in NATIVE pixel space — flip
+        # those by the native width.
+        if random.random() < 0.5:
+            img_padded = cv2.flip(img_padded, 1)
+            # Native flip
+            cx_native = float(K_native[0, 2])
+            W_native_est = max(2.0 * cx_native, 1.0)
+            kp17_cam[:, 0] *= -1.0
+            kp17_2d[:, 0]  = (W_native_est - 1) - kp17_2d[:, 0]
+            for a, b in COCO17_LR_PAIRS:
+                kp17_cam[[a, b]]    = kp17_cam[[b, a]]
+                kp17_2d[[a, b]]     = kp17_2d[[b, a]]
+                present17[[a, b]]   = present17[[b, a]]
+                present17_2d[[a, b]] = present17_2d[[b, a]]
+
         bp33_xyz_body, bp33_present = hard_target_in_body_axis(
-            kp17_cam, present17.astype(np.float32))
+            kp17_cam, present17)
+
+        # Multi-view consistency inputs.  Normalise K + 2D to [0, 1] image-frac
+        # coords so the loss is scale-agnostic across synth (256-px) and
+        # Ego-Exo4D (3840-px) sources.
+        from coords import build_body_frame
+        R_cam2body, _origin = build_body_frame(kp17_cam, present17.astype(np.float32))
+        if R_cam2body is None:
+            R_body2cam = np.zeros((3, 3), dtype=np.float32)
+            origin_cam_ = np.zeros(3, dtype=np.float32)
+            mv_valid = 0.0
+        else:
+            R_body2cam = R_cam2body.T.astype(np.float32)
+            origin_cam_ = _origin.astype(np.float32)
+            mv_valid = 1.0
+        # Estimate native image (W, H) from K's principal point: cx ≈ W/2, cy ≈ H/2
+        W_native = max(2.0 * float(K_native[0, 2]), 1.0)
+        H_native = max(2.0 * float(K_native[1, 2]), 1.0)
+        # Normalised K
+        K_norm = K_native.copy()
+        K_norm[0, :] /= W_native
+        K_norm[1, :] /= H_native
+        # Normalised 2D
+        kp17_2d_norm = kp17_2d.copy()
+        kp17_2d_norm[:, 0] /= W_native
+        kp17_2d_norm[:, 1] /= H_native
 
         if self.aug is not None:
             try:
@@ -249,6 +372,13 @@ class EgoExoTrainDataset(Dataset):
             "bp33_present":   torch.from_numpy(bp33_present),
             "sample_id":      sample_id,
             "source":         "egoexo",
+            # ── Multi-view reprojection inputs (normalised to [0,1] image-frac) ──
+            "mv_valid":       torch.tensor(mv_valid, dtype=torch.float32),
+            "mv_K_norm":      torch.from_numpy(K_norm.astype(np.float32)),
+            "mv_R_body2cam":  torch.from_numpy(R_body2cam),
+            "mv_origin_cam":  torch.from_numpy(origin_cam_),
+            "mv_kp2d_norm":   torch.from_numpy(kp17_2d_norm.astype(np.float32)),
+            "mv_present_2d":  torch.from_numpy(present17_2d.astype(np.float32)),
         }
         if self.teacher_cache_dir is not None:
             tp = self.teacher_cache_dir / f"{sample_id}.npz"
@@ -262,6 +392,11 @@ class EgoExoTrainDataset(Dataset):
                         img39[:33] = d["img33"]
                     item["teacher_body_Identity"]   = torch.from_numpy(img39.flatten())
                     item["teacher_body_Identity_4"] = torch.from_numpy(world39.flatten())
+                if "hand_bp33_xyz_body" in d.files:
+                    item["teacher_hand_xyz"]     = torch.from_numpy(
+                        d["hand_bp33_xyz_body"].astype(np.float32))
+                    item["teacher_hand_present"] = torch.from_numpy(
+                        d["hand_bp33_present"].astype(np.float32))
         return item
 
 

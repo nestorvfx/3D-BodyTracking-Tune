@@ -203,17 +203,37 @@ class V2DistillationLoss(nn.Module):
             loss_terms["L_anchor"] = (err * anchor_weight).sum() / max(
                 anchor_weight.sum().item(), 1.0)
 
-        # ── 6) Multi-view 2D-reprojection consistency ─────────────────────
+        # ── 6) Multi-view (single-cam reprojection) consistency ───────────
+        # Per-sample: invert the GT body-frame transform to get pred_cam,
+        # project via K to native-pixel 2D, compare to GT 2D.  Strong
+        # 2D-grounded constraint per sample.  Engaged only when GT supplied
+        # all the multi-view fields and >=4 2D anchors are visible.
         if multiview is not None and self.lam_mv > 0:
-            # multiview["kp2d"]: (B, V, 17, 2) px coords of GT in each cam
-            # multiview["K"], multiview["Rt"]: per-cam intrinsics + extrinsics
-            # We project the student's body-axis world prediction back to each
-            # cam.  Skipped here for brevity — a full impl needs the inverse
-            # body-frame transform per sample (R_cam_to_body and origin from
-            # the GT side stored alongside the multiview dict).
-            # Provided as zero-loss until the projector helper lands; the
-            # term is keyed in the dict so trainers can inspect its presence.
-            loss_terms["L_multiview"] = zero
+            valid     = multiview["mv_valid"].to(s_world.device)         # (B,)
+            K_norm    = multiview["mv_K_norm"].to(s_world)               # (B, 3, 3) [0,1]
+            R_b2c     = multiview["mv_R_body2cam"].to(s_world)           # (B, 3, 3)
+            origin    = multiview["mv_origin_cam"].to(s_world)           # (B, 3)
+            kp2d_gt   = multiview["mv_kp2d_norm"].to(s_world)            # (B, 17, 2) [0,1]
+            present2d = multiview["mv_present_2d"].to(s_world)           # (B, 17)
+            from lib.keypoint_map import BP_INDEX_FOR_COCO
+            idx = torch.tensor(BP_INDEX_FOR_COCO, device=s_world.device)
+            s17_body = s_world[:, :33].index_select(1, idx)              # (B, 17, 3)
+            # pred_cam = R_body_to_cam @ pred_body + origin
+            s17_cam = (s17_body @ R_b2c.transpose(-1, -2)) + origin[:, None, :]
+            z  = s17_cam[..., 2:3].clamp_min(0.05)
+            xy = s17_cam[..., :2] / z
+            fx = K_norm[:, 0, 0:1].unsqueeze(1)
+            fy = K_norm[:, 1, 1:2].unsqueeze(1)
+            cx = K_norm[:, 0, 2:3].unsqueeze(1)
+            cy = K_norm[:, 1, 2:3].unsqueeze(1)
+            s17_2d_norm = torch.stack(
+                [fx[..., 0] * xy[..., 0] + cx[..., 0],
+                 fy[..., 0] * xy[..., 1] + cy[..., 0]], dim=-1)
+            err = F.smooth_l1_loss(s17_2d_norm, kp2d_gt, beta=0.05,
+                                   reduction="none").mean(-1)             # (B, 17)
+            mask = present2d * valid[:, None]
+            denom = mask.sum().clamp_min(1.0)
+            loss_terms["L_multiview"] = (err * mask).sum() / denom
 
         total = (
             self.lam_hard   * loss_terms["L_hard"]

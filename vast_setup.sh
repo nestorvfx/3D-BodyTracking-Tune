@@ -134,7 +134,10 @@ from pathlib import Path
 download_teacher_weights(Path("assets/teachers"))
 PY
 
-# 9. Open Images V7 sim2real corpus (occluder cutouts + bg crops) -------
+# 9. Open Images V7 sim2real corpus -------------------------------------
+# Two occluder corpora extracted (Sárándi-2024 SOTA: object + human-shaped):
+#   occluders/        — non-human classes (8000 cutouts, original Sárándi-2018)
+#   occluders_human/  — human silhouettes (4000 cutouts, Sárándi-2024 update)
 if [ ! -d "assets/sim2real_refs/occluders" ] || \
    [ "$(ls -1 assets/sim2real_refs/occluders 2>/dev/null | wc -l)" -lt 1000 ]; then
     log "extracting Open Images V7 sim2real corpus (~30 min, ~270 MB output)"
@@ -142,6 +145,13 @@ if [ ! -d "assets/sim2real_refs/occluders" ] || \
     python3 tooling/_iter_extract_openimages.py \
         --max-occluders 8000 --max-bg 5000 --n-workers 8 \
         --skip-existing-occluders
+fi
+if [ ! -d "assets/sim2real_refs/occluders_human" ] || \
+   [ "$(ls -1 assets/sim2real_refs/occluders_human 2>/dev/null | wc -l)" -lt 500 ]; then
+    log "extracting human-shaped occluders (Sárándi-2024)"
+    python3 tooling/_iter_extract_openimages.py \
+        --max-occluders 4000 --max-bg 0 --n-workers 8 \
+        --human-occluders-only --skip-existing-occluders
 fi
 
 touch "$MARKER"

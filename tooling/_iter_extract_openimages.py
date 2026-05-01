@@ -288,11 +288,15 @@ def main() -> int:
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--skip-existing-occluders", action="store_true",
                     help="Don't redownload+re-extract already-present occluders")
+    ap.add_argument("--human-occluders-only", action="store_true",
+                    help="Extract human-shaped occluders (Sárándi-2024) into "
+                         "occluders_human/ instead of objects into occluders/.")
     args = ap.parse_args()
     sys.stdout.reconfigure(line_buffering=True)
 
     rng = np.random.default_rng(args.seed)
-    OUT_OCC.mkdir(parents=True, exist_ok=True)
+    OUT_OCC_DIR = OUT_OCC.parent / "occluders_human" if args.human_occluders_only else OUT_OCC
+    OUT_OCC_DIR.mkdir(parents=True, exist_ok=True)
     OUT_BG.mkdir(parents=True, exist_ok=True)
     IMG_CACHE.mkdir(parents=True, exist_ok=True)
     emit_attribution()
@@ -306,8 +310,13 @@ def main() -> int:
     seg_rows = load_seg_metadata(seg_csv)
     print(f"[seg] {len(seg_rows)} total instances")
 
-    seg_nonhuman = [r for r in seg_rows if r["LabelName"] not in HUMAN_MIDS]
-    print(f"[seg] {len(seg_nonhuman)} non-human instances")
+    if args.human_occluders_only:
+        seg_filtered = [r for r in seg_rows if r["LabelName"] in HUMAN_MIDS]
+        print(f"[seg] {len(seg_filtered)} HUMAN instances (Sárándi-2024 mode)")
+    else:
+        seg_filtered = [r for r in seg_rows if r["LabelName"] not in HUMAN_MIDS]
+        print(f"[seg] {len(seg_filtered)} non-human instances")
+    seg_nonhuman = seg_filtered                                    # naming preserved
 
     rng.shuffle(seg_nonhuman)
     seg_nonhuman = seg_nonhuman[:args.max_occluders * 2]
@@ -347,7 +356,7 @@ def main() -> int:
         image_id = row["ImageID"]
         mask_name = row["MaskPath"]
         out_name = f"{Path(mask_name).stem}.png"
-        out_path = OUT_OCC / out_name
+        out_path = OUT_OCC_DIR / out_name
         if args.skip_existing_occluders and out_path.exists():
             n_occ += 1
             continue
