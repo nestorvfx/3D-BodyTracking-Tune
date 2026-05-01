@@ -37,9 +37,21 @@ log "system packages"
 apt-get update -qq
 apt-get install -y -qq ffmpeg rsync tmux git unzip curl jq libgl1 libglib2.0-0 >/dev/null
 
+# Ubuntu 24.04 / PEP 668: the system Python is marked externally-managed,
+# which blocks `pip install` system-wide.  PEP 668 itself endorses removing
+# the marker for single-application container images (Vast is exactly that —
+# throwaway container, no other Python apps to break).  This is cleaner than
+# threading --break-system-packages through every pip call (and through the
+# pip subprocess calls inside our Python scripts) on a per-script basis.
+# Reference: https://peps.python.org/pep-0668/ §"Container images".
+for f in /usr/lib/python3.*/EXTERNALLY-MANAGED; do
+    [ -f "$f" ] && rm -f "$f" && log "removed PEP 668 marker: $f"
+done
+
 # 2. Python + PyTorch ----------------------------------------------------
 log "python deps"
-python3 -m pip install --quiet --upgrade pip
+python3 -m pip install --quiet --upgrade pip || \
+    log "[warn] pip self-upgrade refused; continuing with system pip"
 
 # Detect GPU architecture
 GPU_NAME=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1 || echo "unknown")
