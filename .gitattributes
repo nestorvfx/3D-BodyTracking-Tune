@@ -1,0 +1,16 @@
+* text=auto
+
+# Shell scripts must keep LF — Vast runs Linux
+*.sh text eol=lf
+
+# Python files: LF
+*.py text eol=lf
+
+# JSON / yaml / configs: LF
+*.json text eol=lf
+*.yaml text eol=lf
+*.yml  text eol=lf
+*.toml text eol=lf
+
+# Markdown: LF
+*.md text eol=lf
