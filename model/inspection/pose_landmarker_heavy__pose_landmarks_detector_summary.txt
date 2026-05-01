@@ -1,0 +1,26 @@
+=== pose_landmarks_detector.tflite ===
+size: 27055.6 KB
+subgraphs: 1
+operators: 689
+tensors:   1098
+
+INPUT tensors:
+  [   0] input_1                                  shape=1x256x256x3     type=0
+
+OUTPUT tensors:
+  [ 696] Identity                                 shape=1x195           type=0
+  [ 701] Identity_1                               shape=1x1             type=0
+  [ 565] Identity_2                               shape=1x256x256x1     type=0
+  [ 641] Identity_3                               shape=1x64x64x39      type=0
+  [ 698] Identity_4                               shape=1x117           type=0
+
+Opcode histogram:
+  DEQUANTIZE                     396
+  CONV_2D                        116
+  DEPTHWISE_CONV_2D              82
+  ADD                            73
+  PAD                            8
+  RESIZE_BILINEAR                5
+  MAX_POOL_2D                    5
+  RESHAPE                        3
+  LOGISTIC                       1

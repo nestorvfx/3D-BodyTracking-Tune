@@ -1,0 +1,35 @@
+[
+  {
+    "mode": "image",
+    "det_conf": 0.3,
+    "n_frames": 135,
+    "n_detected": 124,
+    "det_rate_pct": 91.85185185185185,
+    "pa_mpjpe_mm": 125.1966961396605,
+    "pa_median_mm": 91.94802038257578,
+    "pa_n": 124,
+    "wall_sec": 8.980393171310425
+  },
+  {
+    "mode": "image",
+    "det_conf": 0.5,
+    "n_frames": 135,
+    "n_detected": 118,
+    "det_rate_pct": 87.4074074074074,
+    "pa_mpjpe_mm": 118.94794353504831,
+    "pa_median_mm": 92.69333951086436,
+    "pa_n": 118,
+    "wall_sec": 8.286488771438599
+  },
+  {
+    "mode": "image",
+    "det_conf": 0.7,
+    "n_frames": 135,
+    "n_detected": 102,
+    "det_rate_pct": 75.55555555555556,
+    "pa_mpjpe_mm": 117.6313818845848,
+    "pa_median_mm": 89.04859181803756,
+    "pa_n": 102,
+    "wall_sec": 7.18923282623291
+  }
+]

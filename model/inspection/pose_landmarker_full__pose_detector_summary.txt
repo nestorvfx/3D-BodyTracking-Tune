@@ -1,0 +1,24 @@
+=== pose_detector.tflite ===
+size: 2889.7 KB
+subgraphs: 1
+operators: 291
+tensors:   442
+
+INPUT tensors:
+  [   0] input_1                                  shape=1x224x224x3     type=0
+
+OUTPUT tensors:
+  [ 441] Identity                                 shape=1x2254x12       type=0
+  [ 429] Identity_1                               shape=1x2254x1        type=0
+
+Opcode histogram:
+  DEQUANTIZE                     144
+  CONV_2D                        45
+  DENSIFY                        38
+  DEPTHWISE_CONV_2D              28
+  ADD                            15
+  PAD                            8
+  RESHAPE                        6
+  DEPTH_TO_SPACE                 3
+  RESIZE_BILINEAR                2
+  CONCATENATION                  2

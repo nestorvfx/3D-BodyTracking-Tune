@@ -1,0 +1,364 @@
+{
+  "starting_take_pool": 54,
+  "after_combo_cap": 32,
+  "after_low_motion_drop": 26,
+  "low_motion_dropped": [
+    "0b812849-e4a6-47f3-a379-0127f36bce72",
+    "18368d94-a997-4d59-b088-0f300664f0f2",
+    "2e2a4ad8-5d0b-496b-abc1-3bf548fecff4",
+    "350c784e-21aa-4274-bac8-a1fae4a1e090",
+    "5bfb3d76-a596-4535-8f46-7ac64b61bdf3",
+    "73e04891-036b-41da-8682-8ee1c2e4bb6e"
+  ],
+  "scenario_distribution": {
+    "basketball": 7,
+    "dance": 6,
+    "bike": 3,
+    "cooking": 3,
+    "soccer": 1,
+    "health": 5,
+    "music": 1
+  },
+  "university_distribution": {
+    "unc": 3,
+    "uniandes": 4,
+    "upenn": 3,
+    "georgiatech": 6,
+    "iiith": 2,
+    "sfu": 4,
+    "utokyo": 2,
+    "nus": 1,
+    "indiana": 1
+  },
+  "scenarios_missing": [
+    "bouldering"
+  ],
+  "frames_per_take_target": 12,
+  "min_stride_frames": 4,
+  "min_pose_disp_m": 0.01,
+  "max_per_combo": 3,
+  "total_frames_in_manifest": 1292,
+  "mean_motion_m_per_take": {
+    "01a5aa96-29c3-4f4c-9f03-4404a4a260ef": 0.0492,
+    "022b2678-7f90-4e2f-8b81-191470563dac": 0.0839,
+    "04f0854f-7a61-4902-a5ea-cf9b9ff2785f": 0.0927,
+    "091d8f3a-27d4-4dd0-8434-5b4d572e48e9": 0.0683,
+    "0cfe9a30-a349-4066-8832-47116d4bd38a": 0.2216,
+    "140253fd-9258-483a-9bf1-5426d91a05dd": 0.062,
+    "206fc370-23f7-4516-9c5c-9f2d6df16d5f": 0.1643,
+    "2a5d2d00-f7cf-4228-ad3b-553d303e069f": 0.3043,
+    "2f53a0ce-246d-4bb3-adea-37db80c45688": 0.0635,
+    "4671238e-594f-49ba-ad74-b6b2bfe6a9a0": 0.0405,
+    "5d25cc61-f04d-47e3-9f0e-dbbf7707f0a0": 0.1308,
+    "5d8b8273-6bd9-4d53-b3d7-ee31dbc93e59": 0.1962,
+    "60074d58-586f-4da8-b2c5-426c58c5c060": 0.1299,
+    "64839cc5-06ff-4cb8-b381-5388913d2e29": 0.0666,
+    "725b6b84-0a79-4053-b581-828a5da77753": 0.0532,
+    "72a51c48-eea6-446d-b933-f44620806e50": 0.0632,
+    "738a80c1-c204-4fb5-bad0-8a485d1251d8": 0.0796,
+    "7dab16d8-d718-4b8c-8993-675ae267c888": 0.0727,
+    "8c904e96-eea7-4b47-a8a1-0201424090df": 0.0502,
+    "9d88d1fc-6174-4c63-b0dc-3f55c6b1bffc": 0.038,
+    "a10448e6-4ad4-4678-aa66-24bf7bde8b6e": 0.1646,
+    "b511dfed-58f4-4c91-bf0a-f8ce9d47aea9": 0.0971,
+    "bb97189c-c3c2-445b-998a-e65162cb6c93": 0.0576,
+    "bf0d03c3-9e92-4c6d-864e-b9ebd66a73b8": 0.0567,
+    "e9d6c233-3f56-4268-bce6-95c3ad19c77c": 0.1082,
+    "f7805c2d-d9bf-44ed-9ad3-34145286f2d7": 0.1966
+  },
+  "take_meta": {
+    "01a5aa96-29c3-4f4c-9f03-4404a4a260ef": {
+      "take_name": "unc_basketball_02-24-23_02_10",
+      "scenario": "basketball",
+      "university": "unc",
+      "cams": [
+        "cam01",
+        "cam02",
+        "cam03",
+        "cam04"
+      ]
+    },
+    "022b2678-7f90-4e2f-8b81-191470563dac": {
+      "take_name": "uniandes_dance_016_36",
+      "scenario": "dance",
+      "university": "uniandes",
+      "cams": [
+        "cam01",
+        "cam02",
+        "cam03",
+        "cam04",
+        "cam05"
+      ]
+    },
+    "04f0854f-7a61-4902-a5ea-cf9b9ff2785f": {
+      "take_name": "upenn_0706_Dance_4_3",
+      "scenario": "dance",
+      "university": "upenn",
+      "cams": [
+        "gp01",
+        "gp02",
+        "gp03",
+        "gp04",
+        "gp05"
+      ]
+    },
+    "091d8f3a-27d4-4dd0-8434-5b4d572e48e9": {
+      "take_name": "georgiatech_bike_06_12",
+      "scenario": "bike",
+      "university": "georgiatech",
+      "cams": [
+        "cam01",
+        "cam03",
+        "cam04",
+        "cam05"
+      ]
+    },
+    "0cfe9a30-a349-4066-8832-47116d4bd38a": {
+      "take_name": "uniandes_dance_008_36",
+      "scenario": "dance",
+      "university": "uniandes",
+      "cams": [
+        "cam01",
+        "cam02",
+        "cam03",
+        "cam04",
+        "cam05"
+      ]
+    },
+    "140253fd-9258-483a-9bf1-5426d91a05dd": {
+      "take_name": "iiith_cooking_59_2",
+      "scenario": "cooking",
+      "university": "iiith",
+      "cams": [
+        "cam01",
+        "cam02",
+        "cam03",
+        "cam04"
+      ]
+    },
+    "206fc370-23f7-4516-9c5c-9f2d6df16d5f": {
+      "take_name": "sfu_basketball_04_8",
+      "scenario": "basketball",
+      "university": "sfu",
+      "cams": [
+        "cam01",
+        "cam02",
+        "cam03",
+        "cam04"
+      ]
+    },
+    "2a5d2d00-f7cf-4228-ad3b-553d303e069f": {
+      "take_name": "utokyo_soccer_8000_43_6",
+      "scenario": "soccer",
+      "university": "utokyo",
+      "cams": [
+        "cam01",
+        "cam02",
+        "cam03",
+        "cam04",
+        "cam05"
+      ]
+    },
+    "2f53a0ce-246d-4bb3-adea-37db80c45688": {
+      "take_name": "nus_cpr_12_1",
+      "scenario": "health",
+      "university": "nus",
+      "cams": [
+        "cam01",
+        "cam02",
+        "cam03",
+        "cam04"
+      ]
+    },
+    "4671238e-594f-49ba-ad74-b6b2bfe6a9a0": {
+      "take_name": "iiith_cooking_90_4",
+      "scenario": "cooking",
+      "university": "iiith",
+      "cams": [
+        "cam01",
+        "cam02",
+        "cam03",
+        "cam04"
+      ]
+    },
+    "5d25cc61-f04d-47e3-9f0e-dbbf7707f0a0": {
+      "take_name": "unc_basketball_02-24-23_02_11",
+      "scenario": "basketball",
+      "university": "unc",
+      "cams": [
+        "cam01",
+        "cam02",
+        "cam03",
+        "cam04"
+      ]
+    },
+    "5d8b8273-6bd9-4d53-b3d7-ee31dbc93e59": {
+      "take_name": "uniandes_dance_016_13",
+      "scenario": "dance",
+      "university": "uniandes",
+      "cams": [
+        "cam01",
+        "cam02",
+        "cam03",
+        "cam04",
+        "cam05"
+      ]
+    },
+    "60074d58-586f-4da8-b2c5-426c58c5c060": {
+      "take_name": "unc_basketball_03-30-23_02_7",
+      "scenario": "basketball",
+      "university": "unc",
+      "cams": [
+        "cam01",
+        "cam02",
+        "cam03",
+        "cam04"
+      ]
+    },
+    "64839cc5-06ff-4cb8-b381-5388913d2e29": {
+      "take_name": "sfu_cooking028_12",
+      "scenario": "cooking",
+      "university": "sfu",
+      "cams": [
+        "cam01",
+        "cam02",
+        "cam03",
+        "cam04"
+      ]
+    },
+    "725b6b84-0a79-4053-b581-828a5da77753": {
+      "take_name": "georgiatech_bike_07_2",
+      "scenario": "bike",
+      "university": "georgiatech",
+      "cams": [
+        "cam01",
+        "cam03",
+        "cam04",
+        "cam05"
+      ]
+    },
+    "72a51c48-eea6-446d-b933-f44620806e50": {
+      "take_name": "indiana_music_04_5",
+      "scenario": "music",
+      "university": "indiana",
+      "cams": [
+        "cam01",
+        "cam02",
+        "cam03",
+        "cam04"
+      ]
+    },
+    "738a80c1-c204-4fb5-bad0-8a485d1251d8": {
+      "take_name": "upenn_0713_Dance_4_5",
+      "scenario": "dance",
+      "university": "upenn",
+      "cams": [
+        "gp01",
+        "gp02",
+        "gp03",
+        "gp04",
+        "gp05"
+      ]
+    },
+    "7dab16d8-d718-4b8c-8993-675ae267c888": {
+      "take_name": "upenn_0706_Dance_4_2",
+      "scenario": "dance",
+      "university": "upenn",
+      "cams": [
+        "gp01",
+        "gp02",
+        "gp03",
+        "gp04",
+        "gp05"
+      ]
+    },
+    "8c904e96-eea7-4b47-a8a1-0201424090df": {
+      "take_name": "georgiatech_bike_16_14",
+      "scenario": "bike",
+      "university": "georgiatech",
+      "cams": [
+        "cam01",
+        "cam03",
+        "cam04",
+        "cam05"
+      ]
+    },
+    "9d88d1fc-6174-4c63-b0dc-3f55c6b1bffc": {
+      "take_name": "georgiatech_covid_04_4",
+      "scenario": "health",
+      "university": "georgiatech",
+      "cams": [
+        "cam01",
+        "cam02",
+        "cam03",
+        "cam04"
+      ]
+    },
+    "a10448e6-4ad4-4678-aa66-24bf7bde8b6e": {
+      "take_name": "sfu_basketball_04_16",
+      "scenario": "basketball",
+      "university": "sfu",
+      "cams": [
+        "cam01",
+        "cam02",
+        "cam03",
+        "cam04"
+      ]
+    },
+    "b511dfed-58f4-4c91-bf0a-f8ce9d47aea9": {
+      "take_name": "georgiatech_covid_02_4",
+      "scenario": "health",
+      "university": "georgiatech",
+      "cams": [
+        "cam01",
+        "cam02",
+        "cam03",
+        "cam04"
+      ]
+    },
+    "bb97189c-c3c2-445b-998a-e65162cb6c93": {
+      "take_name": "georgiatech_covid_18_8",
+      "scenario": "health",
+      "university": "georgiatech",
+      "cams": [
+        "cam01",
+        "cam03",
+        "cam04",
+        "cam05"
+      ]
+    },
+    "bf0d03c3-9e92-4c6d-864e-b9ebd66a73b8": {
+      "take_name": "utokyo_pcr_2001_29_4",
+      "scenario": "health",
+      "university": "utokyo",
+      "cams": [
+        "cam01",
+        "cam02",
+        "cam03",
+        "cam04"
+      ]
+    },
+    "e9d6c233-3f56-4268-bce6-95c3ad19c77c": {
+      "take_name": "sfu_basketball012_6",
+      "scenario": "basketball",
+      "university": "sfu",
+      "cams": [
+        "cam01",
+        "cam02",
+        "cam03",
+        "cam04"
+      ]
+    },
+    "f7805c2d-d9bf-44ed-9ad3-34145286f2d7": {
+      "take_name": "uniandes_basketball_004_45",
+      "scenario": "basketball",
+      "university": "uniandes",
+      "cams": [
+        "cam01",
+        "cam02",
+        "cam03",
+        "cam04"
+      ]
+    }
+  }
+}

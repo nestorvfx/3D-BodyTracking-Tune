@@ -1,0 +1,537 @@
+{
+  "manual_only": false,
+  "n_records": 510,
+  "n_intersection": 381,
+  "per_variant_own_set": {
+    "lite": {
+      "mean_mm": 112.8718780474248,
+      "ci_lo_mm": 107.11379949574436,
+      "ci_hi_mm": 119.5231083190177,
+      "n": 411,
+      "det_rate_pct": 80.58823529411765
+    },
+    "full": {
+      "mean_mm": 108.55944744220882,
+      "ci_lo_mm": 102.24154067870224,
+      "ci_hi_mm": 115.1372009342279,
+      "n": 400,
+      "det_rate_pct": 78.43137254901961
+    },
+    "heavy": {
+      "mean_mm": 114.32589585880608,
+      "ci_lo_mm": 109.06092462661942,
+      "ci_hi_mm": 120.29401475488761,
+      "n": 415,
+      "det_rate_pct": 81.37254901960785
+    }
+  },
+  "intersection": {
+    "lite": {
+      "mean_mm": 105.87622992393084,
+      "ci_lo_mm": 100.94715103210288,
+      "ci_hi_mm": 111.13866947894157,
+      "n": 381
+    },
+    "full": {
+      "mean_mm": 103.3074279349908,
+      "ci_lo_mm": 97.60037480785259,
+      "ci_hi_mm": 109.85219789417332,
+      "n": 381
+    },
+    "heavy": {
+      "mean_mm": 108.26946909008723,
+      "ci_lo_mm": 102.61288028150926,
+      "ci_hi_mm": 113.69649626592997,
+      "n": 381
+    }
+  },
+  "paired_vs_heavy": {
+    "lite": {
+      "delta_mm": -2.393239166156404,
+      "ci_lo_mm": -5.946486168222791,
+      "ci_hi_mm": 1.1864747942327207,
+      "n": 381
+    },
+    "full": {
+      "delta_mm": -4.962041155096453,
+      "ci_lo_mm": -7.942287693769688,
+      "ci_hi_mm": -1.6414699596326427,
+      "n": 381
+    }
+  },
+  "per_distance": {
+    "near": {
+      "lite": {
+        "mean_mm": 95.90373434429185,
+        "ci_lo_mm": 90.95047144435051,
+        "ci_hi_mm": 101.41520749941627,
+        "n": 155
+      },
+      "full": {
+        "mean_mm": 93.76401567487198,
+        "ci_lo_mm": 86.85072386501574,
+        "ci_hi_mm": 100.86499667745748,
+        "n": 155
+      },
+      "heavy": {
+        "mean_mm": 99.59957301974212,
+        "ci_lo_mm": 92.78966051462929,
+        "ci_hi_mm": 107.34764279679018,
+        "n": 155
+      }
+    },
+    "mid": {
+      "lite": {
+        "mean_mm": 97.78603674715592,
+        "ci_lo_mm": 91.69642080035331,
+        "ci_hi_mm": 103.70374913499612,
+        "n": 165
+      },
+      "full": {
+        "mean_mm": 92.15830860840609,
+        "ci_lo_mm": 86.48024056438906,
+        "ci_hi_mm": 98.00839595484841,
+        "n": 165
+      },
+      "heavy": {
+        "mean_mm": 96.15534929243522,
+        "ci_lo_mm": 91.62458242863845,
+        "ci_hi_mm": 101.33693031715602,
+        "n": 165
+      }
+    },
+    "far": {
+      "lite": {
+        "mean_mm": 153.09948712084736,
+        "ci_lo_mm": 133.68805475606666,
+        "ci_hi_mm": 174.7417933338497,
+        "n": 61
+      },
+      "full": {
+        "mean_mm": 157.7145359547431,
+        "ci_lo_mm": 135.15637255271042,
+        "ci_hi_mm": 180.5893687242798,
+        "n": 61
+      },
+      "heavy": {
+        "mean_mm": 163.06723396739997,
+        "ci_lo_mm": 143.66874805278687,
+        "ci_hi_mm": 184.4889335541099,
+        "n": 61
+      }
+    }
+  },
+  "per_scenario": {
+    "basketball": {
+      "lite": {
+        "mean_mm": 137.05980791691456,
+        "ci_lo_mm": 124.51393891247184,
+        "ci_hi_mm": 151.78250622810828,
+        "n": 84
+      },
+      "full": {
+        "mean_mm": 138.2379605570485,
+        "ci_lo_mm": 123.94323513161454,
+        "ci_hi_mm": 154.38938374449606,
+        "n": 84
+      },
+      "heavy": {
+        "mean_mm": 141.4338846956979,
+        "ci_lo_mm": 128.60283141352144,
+        "ci_hi_mm": 157.13433231226327,
+        "n": 84
+      }
+    },
+    "bike": {
+      "lite": {
+        "mean_mm": 119.9470333367783,
+        "ci_lo_mm": 101.47177318814407,
+        "ci_hi_mm": 138.43353680246176,
+        "n": 33
+      },
+      "full": {
+        "mean_mm": 132.777361160207,
+        "ci_lo_mm": 109.06773497929696,
+        "ci_hi_mm": 161.19549612618357,
+        "n": 33
+      },
+      "heavy": {
+        "mean_mm": 134.1984162444566,
+        "ci_lo_mm": 107.83348552094238,
+        "ci_hi_mm": 164.67346216823617,
+        "n": 33
+      }
+    },
+    "cooking": {
+      "lite": {
+        "mean_mm": 99.61620688441,
+        "ci_lo_mm": 85.60803731696761,
+        "ci_hi_mm": 114.2474353514522,
+        "n": 14
+      },
+      "full": {
+        "mean_mm": 99.21140795683523,
+        "ci_lo_mm": 84.71738992091556,
+        "ci_hi_mm": 113.15214903638599,
+        "n": 14
+      },
+      "heavy": {
+        "mean_mm": 103.11005631673353,
+        "ci_lo_mm": 94.35331356092374,
+        "ci_hi_mm": 112.57418663429148,
+        "n": 14
+      }
+    },
+    "dance": {
+      "lite": {
+        "mean_mm": 91.43447261577347,
+        "ci_lo_mm": 85.35868203556016,
+        "ci_hi_mm": 97.6959982516846,
+        "n": 130
+      },
+      "full": {
+        "mean_mm": 84.25962202155567,
+        "ci_lo_mm": 78.52603946837168,
+        "ci_hi_mm": 90.11523608572321,
+        "n": 130
+      },
+      "heavy": {
+        "mean_mm": 92.66958227006829,
+        "ci_lo_mm": 87.84277429649961,
+        "ci_hi_mm": 98.27369716423297,
+        "n": 130
+      }
+    },
+    "health": {
+      "lite": {
+        "mean_mm": 86.90869494890205,
+        "ci_lo_mm": 82.52749280442691,
+        "ci_hi_mm": 91.95571873246047,
+        "n": 97
+      },
+      "full": {
+        "mean_mm": 83.40162039806191,
+        "ci_lo_mm": 78.24427425302675,
+        "ci_hi_mm": 88.27598854905581,
+        "n": 97
+      },
+      "heavy": {
+        "mean_mm": 90.0682511854387,
+        "ci_lo_mm": 85.90078136035325,
+        "ci_hi_mm": 94.26740014029394,
+        "n": 97
+      }
+    },
+    "music": {
+      "lite": {
+        "mean_mm": 117.26416825851804,
+        "ci_lo_mm": 101.5126544655671,
+        "ci_hi_mm": 132.13146371469512,
+        "n": 20
+      },
+      "full": {
+        "mean_mm": 108.0084769808899,
+        "ci_lo_mm": 94.07205237136175,
+        "ci_hi_mm": 124.79848531784464,
+        "n": 20
+      },
+      "heavy": {
+        "mean_mm": 92.78132808082196,
+        "ci_lo_mm": 81.31615577898027,
+        "ci_hi_mm": 106.7321682594744,
+        "n": 20
+      }
+    },
+    "soccer": {
+      "lite": {
+        "mean_mm": 270.344174745664,
+        "ci_lo_mm": 68.60964657071965,
+        "ci_hi_mm": 544.4443952172362,
+        "n": 3
+      },
+      "full": {
+        "mean_mm": 257.8837152416169,
+        "ci_lo_mm": 80.76243328664407,
+        "ci_hi_mm": 521.1442699929379,
+        "n": 3
+      },
+      "heavy": {
+        "mean_mm": 286.2800875568021,
+        "ci_lo_mm": 93.39356065735755,
+        "ci_hi_mm": 541.0566041824385,
+        "n": 3
+      }
+    }
+  },
+  "per_take": [
+    {
+      "take_name": "georgiatech_covid_02_4",
+      "scenario": "health",
+      "distance_bucket": "near",
+      "hip_z_m": 1.0889493302781488,
+      "n_frames": 20,
+      "lite_mm": 63.17507115833153,
+      "full_mm": 65.28208508840868,
+      "heavy_mm": 71.26116262029461,
+      "uid": "b511dfed-58f4-4c91-bf0a-f8ce9d47aea9"
+    },
+    {
+      "take_name": "upenn_0706_Dance_4_3",
+      "scenario": "dance",
+      "distance_bucket": "mid",
+      "hip_z_m": 3.5876830502574593,
+      "n_frames": 20,
+      "lite_mm": 70.39258688490816,
+      "full_mm": 65.41799721431244,
+      "heavy_mm": 74.51374330610452,
+      "uid": "04f0854f-7a61-4902-a5ea-cf9b9ff2785f"
+    },
+    {
+      "take_name": "georgiatech_covid_18_8",
+      "scenario": "health",
+      "distance_bucket": "near",
+      "hip_z_m": 1.7263242521887854,
+      "n_frames": 20,
+      "lite_mm": 75.62174269241001,
+      "full_mm": 74.15271512284815,
+      "heavy_mm": 75.4159681594657,
+      "uid": "bb97189c-c3c2-445b-998a-e65162cb6c93"
+    },
+    {
+      "take_name": "upenn_0713_Dance_4_5",
+      "scenario": "dance",
+      "distance_bucket": "mid",
+      "hip_z_m": 2.9551721702879146,
+      "n_frames": 18,
+      "lite_mm": 73.74934566374456,
+      "full_mm": 66.44080517255766,
+      "heavy_mm": 77.84552693122507,
+      "uid": "738a80c1-c204-4fb5-bad0-8a485d1251d8"
+    },
+    {
+      "take_name": "upenn_0706_Dance_4_2",
+      "scenario": "dance",
+      "distance_bucket": "mid",
+      "hip_z_m": 3.428853929277259,
+      "n_frames": 21,
+      "lite_mm": 80.65729360692828,
+      "full_mm": 72.64036943959738,
+      "heavy_mm": 84.4697218402203,
+      "uid": "7dab16d8-d718-4b8c-8993-675ae267c888"
+    },
+    {
+      "take_name": "georgiatech_covid_04_4",
+      "scenario": "health",
+      "distance_bucket": "near",
+      "hip_z_m": 1.1882533044706265,
+      "n_frames": 18,
+      "lite_mm": 85.31604302222381,
+      "full_mm": 68.07229172455669,
+      "heavy_mm": 84.65182028789046,
+      "uid": "9d88d1fc-6174-4c63-b0dc-3f55c6b1bffc"
+    },
+    {
+      "take_name": "unc_basketball_02-24-23_02_10",
+      "scenario": "basketball",
+      "distance_bucket": "mid",
+      "hip_z_m": 2.9743924866865425,
+      "n_frames": 15,
+      "lite_mm": 86.63827399190923,
+      "full_mm": 72.90451601890776,
+      "heavy_mm": 85.51777199582202,
+      "uid": "01a5aa96-29c3-4f4c-9f03-4404a4a260ef"
+    },
+    {
+      "take_name": "indiana_music_04_5",
+      "scenario": "music",
+      "distance_bucket": "near",
+      "hip_z_m": 1.8211261748092271,
+      "n_frames": 20,
+      "lite_mm": 117.26416825851804,
+      "full_mm": 108.0084769808899,
+      "heavy_mm": 92.78132808082196,
+      "uid": "72a51c48-eea6-446d-b933-f44620806e50"
+    },
+    {
+      "take_name": "uniandes_dance_016_13",
+      "scenario": "dance",
+      "distance_bucket": "mid",
+      "hip_z_m": 2.035352235760832,
+      "n_frames": 24,
+      "lite_mm": 120.96015403088738,
+      "full_mm": 94.30281932267509,
+      "heavy_mm": 99.65726072840692,
+      "uid": "5d8b8273-6bd9-4d53-b3d7-ee31dbc93e59"
+    },
+    {
+      "take_name": "uniandes_dance_016_36",
+      "scenario": "dance",
+      "distance_bucket": "mid",
+      "hip_z_m": 3.2790707328911792,
+      "n_frames": 24,
+      "lite_mm": 77.59022217547997,
+      "full_mm": 90.78138592411615,
+      "heavy_mm": 100.27200344653342,
+      "uid": "022b2678-7f90-4e2f-8b81-191470563dac"
+    },
+    {
+      "take_name": "nus_cpr_12_1",
+      "scenario": "health",
+      "distance_bucket": "near",
+      "hip_z_m": 1.7477887477832572,
+      "n_frames": 19,
+      "lite_mm": 101.69815458502492,
+      "full_mm": 102.16973911547996,
+      "heavy_mm": 101.90635934245906,
+      "uid": "2f53a0ce-246d-4bb3-adea-37db80c45688"
+    },
+    {
+      "take_name": "sfu_cooking028_12",
+      "scenario": "cooking",
+      "distance_bucket": "mid",
+      "hip_z_m": 2.8194174564080905,
+      "n_frames": 14,
+      "lite_mm": 99.61620688441,
+      "full_mm": 99.21140795683523,
+      "heavy_mm": 103.11005631673353,
+      "uid": "64839cc5-06ff-4cb8-b381-5388913d2e29"
+    },
+    {
+      "take_name": "georgiatech_bike_07_2",
+      "scenario": "bike",
+      "distance_bucket": "near",
+      "hip_z_m": 1.0728553759803616,
+      "n_frames": 15,
+      "lite_mm": 91.38422940395915,
+      "full_mm": 99.53128591420989,
+      "heavy_mm": 104.30782297118681,
+      "uid": "725b6b84-0a79-4053-b581-828a5da77753"
+    },
+    {
+      "take_name": "uniandes_dance_008_36",
+      "scenario": "dance",
+      "distance_bucket": "near",
+      "hip_z_m": 1.7825228582637462,
+      "n_frames": 23,
+      "lite_mm": 117.04909937855116,
+      "full_mm": 107.91251048936587,
+      "heavy_mm": 112.32108023398001,
+      "uid": "0cfe9a30-a349-4066-8832-47116d4bd38a"
+    },
+    {
+      "take_name": "utokyo_pcr_2001_29_4",
+      "scenario": "health",
+      "distance_bucket": "near",
+      "hip_z_m": 1.2341219544498725,
+      "n_frames": 20,
+      "lite_mm": 109.31267107565826,
+      "full_mm": 106.73674400753654,
+      "heavy_mm": 117.15620783517986,
+      "uid": "bf0d03c3-9e92-4c6d-864e-b9ebd66a73b8"
+    },
+    {
+      "take_name": "unc_basketball_02-24-23_02_11",
+      "scenario": "basketball",
+      "distance_bucket": "far",
+      "hip_z_m": 4.098390810714526,
+      "n_frames": 15,
+      "lite_mm": 112.13772343799113,
+      "full_mm": 111.15947359101709,
+      "heavy_mm": 119.5551698531269,
+      "uid": "5d25cc61-f04d-47e3-9f0e-dbbf7707f0a0"
+    },
+    {
+      "take_name": "georgiatech_bike_16_14",
+      "scenario": "bike",
+      "distance_bucket": "near",
+      "hip_z_m": 1.1923631771536658,
+      "n_frames": 6,
+      "lite_mm": 166.32653005190417,
+      "full_mm": 161.6028771945425,
+      "heavy_mm": 121.37914411324472,
+      "uid": "8c904e96-eea7-4b47-a8a1-0201424090df"
+    },
+    {
+      "take_name": "sfu_basketball012_6",
+      "scenario": "basketball",
+      "distance_bucket": "far",
+      "hip_z_m": 5.12309051569034,
+      "n_frames": 14,
+      "lite_mm": 123.27264580542445,
+      "full_mm": 126.31137780963023,
+      "heavy_mm": 129.70049900659941,
+      "uid": "e9d6c233-3f56-4268-bce6-95c3ad19c77c"
+    },
+    {
+      "take_name": "sfu_basketball_04_8",
+      "scenario": "basketball",
+      "distance_bucket": "mid",
+      "hip_z_m": 3.7910548397864816,
+      "n_frames": 8,
+      "lite_mm": 151.2774810150013,
+      "full_mm": 143.6268580703359,
+      "heavy_mm": 152.28781243790655,
+      "uid": "206fc370-23f7-4516-9c5c-9f2d6df16d5f"
+    },
+    {
+      "take_name": "uniandes_basketball_004_45",
+      "scenario": "basketball",
+      "distance_bucket": "far",
+      "hip_z_m": 4.614255279514355,
+      "n_frames": 3,
+      "lite_mm": 144.5560233249538,
+      "full_mm": 153.13851213852624,
+      "heavy_mm": 167.25868537285606,
+      "uid": "f7805c2d-d9bf-44ed-9ad3-34145286f2d7"
+    },
+    {
+      "take_name": "unc_basketball_03-30-23_02_7",
+      "scenario": "basketball",
+      "distance_bucket": "mid",
+      "hip_z_m": 3.9386679370444138,
+      "n_frames": 13,
+      "lite_mm": 172.88406560499217,
+      "full_mm": 182.30528466278918,
+      "heavy_mm": 175.26164798974327,
+      "uid": "60074d58-586f-4da8-b2c5-426c58c5c060"
+    },
+    {
+      "take_name": "georgiatech_bike_06_12",
+      "scenario": "bike",
+      "distance_bucket": "near",
+      "hip_z_m": 1.3565155879357644,
+      "n_frames": 12,
+      "lite_mm": 132.4607898952393,
+      "full_mm": 159.9221972005356,
+      "heavy_mm": 177.97129390164977,
+      "uid": "091d8f3a-27d4-4dd0-8434-5b4d572e48e9"
+    },
+    {
+      "take_name": "sfu_basketball_04_16",
+      "scenario": "basketball",
+      "distance_bucket": "far",
+      "hip_z_m": 4.208068413622097,
+      "n_frames": 16,
+      "lite_mm": 182.13663070853775,
+      "full_mm": 194.01690323211577,
+      "heavy_mm": 186.87907632021984,
+      "uid": "a10448e6-4ad4-4678-aa66-24bf7bde8b6e"
+    },
+    {
+      "take_name": "utokyo_soccer_8000_43_6",
+      "scenario": "soccer",
+      "distance_bucket": "far",
+      "hip_z_m": 7.837875960758403,
+      "n_frames": 3,
+      "lite_mm": 270.344174745664,
+      "full_mm": 257.8837152416169,
+      "heavy_mm": 286.2800875568021,
+      "uid": "2a5d2d00-f7cf-4228-ad3b-553d303e069f"
+    }
+  ],
+  "hip_bias_diagnostic": {
+    "median_mm": 60.50282345556398,
+    "p90_mm": 126.1816698427377,
+    "n": 378
+  }
+}

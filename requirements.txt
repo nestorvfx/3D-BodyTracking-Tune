@@ -1,0 +1,44 @@
+# BlazePose tune — Vast.ai dependency pin list.
+# All entries are commercial-clean (Apache-2.0 / BSD / MIT / PSF).
+# CUDA wheels: torch via the index URL; everything else is pure Python.
+
+# PyTorch (set via torchrun-side install in vast_setup.sh — DO NOT pin here
+# because the right wheel is GPU-architecture dependent.  Hopper/Ampere -> 2.6+cu124,
+# Blackwell (sm_120) -> nightly cu128, A6000/A100 -> 2.6+cu124.)
+# torch>=2.4
+# torchvision>=0.19
+
+# Pose / vision
+mediapipe==0.10.33
+ai-edge-litert==2.1.4          # official TFLite reference runtime, Apache-2.0
+opencv-python==4.13.0.92        # Apache-2.0
+albumentations==2.0.8           # MIT — augmentation pipeline
+Pillow>=10.0,<13                # MIT-CMU
+scikit-image>=0.24,<1           # BSD
+
+# TFLite schema parser (for our custom port + export, no third-party libs)
+tflite==2.18.0                  # Apache-2.0
+
+# Numerical
+numpy>=2.0,<3                   # BSD-3 + others
+scipy>=1.13,<2                  # BSD-3
+
+# Training infra
+tensorboard>=2.18,<3
+tqdm>=4.66,<5
+pyyaml>=6.0,<7
+
+# Ego-Exo4D download CLI (MIT)
+ego4d>=1.7.3
+
+# AWS for the Ego-Exo4D download (the bucket is on S3)
+awscli>=1.33,<2
+
+# Hugging Face transfer (synth dataset is on HF)
+huggingface_hub>=0.27,<1
+hf_transfer>=0.1.6              # Apache-2.0 — fast HF downloads
+
+# PyTorch → TFLite export (Linux-only on Vast).  Official Google path.
+ai-edge-torch>=0.1                # Apache-2.0
+tensorflow>=2.16,<3               # Apache-2.0 — required by ai-edge-torch
+flatbuffers>=24.3                 # Apache-2.0 — needed by our custom export fallback
