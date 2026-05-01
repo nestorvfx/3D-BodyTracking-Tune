@@ -36,6 +36,17 @@ ROOT="$(pwd)"
 # Stages -----------------------------------------------------------------
 STAGE="${STAGE:-all}"
 
+# Knobs (env overrides) --------------------------------------------------
+# BATCH        per-GPU batch size for stages 4 + 5 (default 96, drop to 32
+#              for 16 GB cards like RTX 5070 Ti)
+# LR           AdamW peak LR (default 5e-5)
+# NUM_WORKERS  dataloader workers per rank (default 4)
+# EPOCHS       training epochs (default 20; FAST=1 forces 1)
+BATCH="${BATCH:-96}"
+LR="${LR:-5e-5}"
+NUM_WORKERS="${NUM_WORKERS:-4}"
+EPOCHS="${EPOCHS:-20}"
+
 want_stage() { [ "$STAGE" = "all" ] || [ "$STAGE" = "$1" ]; }
 
 # 1. Synth -------------------------------------------------------------
@@ -96,7 +107,7 @@ if want_stage 4; then
         --teacher-cache /data/teacher_cache \
         --out-root /workspace/ckpts \
         --runs-root /workspace/runs \
-        --epochs 20 --batch-size 96 --lr 5e-5 --bf16 --num-workers 4 \
+        --epochs "$EPOCHS" --batch-size "$BATCH" --lr "$LR" --bf16 --num-workers "$NUM_WORKERS" \
         --ckpt-every-min 10 \
         "${EXTRA[@]}"
 fi
@@ -114,7 +125,7 @@ if want_stage 5; then
         --teacher-cache /data/teacher_cache \
         --out-root /workspace/ckpts \
         --runs-root /workspace/runs \
-        --epochs 20 --batch-size 96 --lr 5e-5 --bf16 --num-workers 4 \
+        --epochs "$EPOCHS" --batch-size "$BATCH" --lr "$LR" --bf16 --num-workers "$NUM_WORKERS" \
         --ckpt-every-min 10 \
         "${EXTRA[@]}"
 fi
