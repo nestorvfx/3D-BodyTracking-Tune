@@ -144,13 +144,22 @@ class V2DistillationLoss(nn.Module):
             t_kp = split_kp_tuple(teacher_body["Identity"])
             t_world = split_world_tuple(teacher_body["Identity_4"])
             body_mask = (t_kp["visibility"][:, :33] > 0.1).float()
+            # Per-sample valid flag (1 = teacher cache hit, 0 = miss/placeholder)
+            tb_valid = teacher_body.get("valid")
+            if tb_valid is not None:
+                body_mask = body_mask * tb_valid.to(body_mask).view(-1, 1)
             loss_terms["L_kd_body"] = smooth_l1_masked(
                 s_world[:, :33], t_world[:, :33], body_mask, beta=self.beta_kd)
-            # Visibility KD on the same 33 KPs
-            loss_terms["L_vis"] = F.binary_cross_entropy_with_logits(
+            # Visibility KD on the same 33 KPs (gated by per-sample valid)
+            vis_err = F.binary_cross_entropy_with_logits(
                 s_kp["visibility"][:, :33],
                 torch.sigmoid(t_kp["visibility"][:, :33]),
-                reduction="mean")
+                reduction="none")
+            if tb_valid is not None:
+                vw = tb_valid.to(vis_err).view(-1, 1).expand_as(vis_err)
+                loss_terms["L_vis"] = (vis_err * vw).sum() / vw.sum().clamp_min(1.0)
+            else:
+                loss_terms["L_vis"] = vis_err.mean()
 
         # ── 3) Hand teacher KD (BP idx 17-22) ──────────────────────────────
         if teacher_hand is not None:
@@ -160,6 +169,9 @@ class V2DistillationLoss(nn.Module):
             full_mask = torch.zeros_like(mask)
             for idx in HAND_BP_INDICES:
                 full_mask[:, idx] = mask[:, idx]
+            th_valid = teacher_hand.get("valid")
+            if th_valid is not None:
+                full_mask = full_mask * th_valid.to(full_mask).view(-1, 1)
             loss_terms["L_kd_hand"] = smooth_l1_masked(
                 s_world[:, :33], tgt, full_mask, beta=self.beta_kd)
 
@@ -190,9 +202,11 @@ class V2DistillationLoss(nn.Module):
                     hard["bp33_present"].to(s_world).float())
             if teacher_body is not None:
                 tb_kp = split_kp_tuple(teacher_body["Identity"])
-                supervised = torch.maximum(
-                    supervised,
-                    (tb_kp["visibility"][:, :33] > 0.1).float())
+                tb_sup = (tb_kp["visibility"][:, :33] > 0.1).float()
+                tb_v = teacher_body.get("valid")
+                if tb_v is not None:
+                    tb_sup = tb_sup * tb_v.to(tb_sup).view(-1, 1)
+                supervised = torch.maximum(supervised, tb_sup)
             # 1.0 = unsupervised → strong anchor; 0.2 = supervised → light anchor
             anchor_weight = torch.where(supervised > 0.5,
                                         torch.tensor(0.2, device=supervised.device),

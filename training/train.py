@@ -413,13 +413,18 @@ def main():
                 "bp33_present":  batch["bp33_present"].to(device).to(dtype),
             }
 
-            # Body teacher: cache hit OR live Heavy on the weak crop
+            # Body teacher: dataset always emits uniform keys (zero placeholders
+            # + per-sample `valid` flag) so default_collate works.  Loss gates
+            # on valid: invalid samples contribute zero loss/denominator.
             teacher_body = None
             if "teacher_body_Identity" in batch:
-                teacher_body = {
-                    "Identity":   batch["teacher_body_Identity"].to(device).to(dtype),
-                    "Identity_4": batch["teacher_body_Identity_4"].to(device).to(dtype),
-                }
+                tb_valid = batch["teacher_body_valid"].to(device).to(dtype)
+                if tb_valid.any():
+                    teacher_body = {
+                        "Identity":   batch["teacher_body_Identity"].to(device).to(dtype),
+                        "Identity_4": batch["teacher_body_Identity_4"].to(device).to(dtype),
+                        "valid":      tb_valid,
+                    }
             elif teacher is not None:
                 with torch.no_grad():
                     teacher_body = {k: v.detach()
@@ -428,10 +433,13 @@ def main():
             # Hand teacher: only fires when the cache holds Sárándi-aligned values
             teacher_hand = None
             if "teacher_hand_xyz" in batch:
-                teacher_hand = {
-                    "bp33_xyz_body": batch["teacher_hand_xyz"].to(device).to(dtype),
-                    "bp33_present":  batch["teacher_hand_present"].to(device).to(dtype),
-                }
+                th_valid = batch["teacher_hand_valid"].to(device).to(dtype)
+                if th_valid.any():
+                    teacher_hand = {
+                        "bp33_xyz_body": batch["teacher_hand_xyz"].to(device).to(dtype),
+                        "bp33_present":  batch["teacher_hand_present"].to(device).to(dtype),
+                        "valid":         th_valid,
+                    }
 
             with torch.no_grad():
                 anchor_out = {k: v.detach() for k, v in anchor(img_weak).items()}

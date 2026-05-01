@@ -92,6 +92,45 @@ def pad_to_square_256(img_bgr: np.ndarray) -> tuple[np.ndarray, int, int]:
     return out, pad_h, pad_w
 
 
+# ─── Uniform teacher-field emission for default_collate ───────────────────
+
+def _attach_teacher_fields(item: dict, teach: dict | None) -> None:
+    """Emit a uniform set of teacher tensors on every sample so PyTorch's
+    default_collate sees identical keys across the batch.
+
+    When the teacher cache is missing for a sample, we still emit zero
+    placeholders + `teacher_*_valid = 0.0`; the loss multiplies its mask
+    by `valid` so those samples contribute nothing to the loss term and
+    nothing to its denominator.  This is the canonical pattern recommended
+    by PyTorch (see issue #96085) instead of a custom collate_fn.
+    """
+    if teach is not None and "world33" in teach:
+        world33 = teach["world33"][:, :3]                          # (33, 3)
+        world39 = np.zeros((39, 3), dtype=np.float32)
+        world39[:33] = world33
+        img33 = teach.get("img33", np.zeros((33, 5), dtype=np.float32))
+        img39 = np.zeros((39, 5), dtype=np.float32)
+        img39[:33] = img33
+        item["teacher_body_Identity"]   = torch.from_numpy(img39.flatten())
+        item["teacher_body_Identity_4"] = torch.from_numpy(world39.flatten())
+        item["teacher_body_valid"]      = torch.tensor(1.0, dtype=torch.float32)
+    else:
+        item["teacher_body_Identity"]   = torch.zeros(195, dtype=torch.float32)
+        item["teacher_body_Identity_4"] = torch.zeros(117, dtype=torch.float32)
+        item["teacher_body_valid"]      = torch.tensor(0.0, dtype=torch.float32)
+
+    if teach is not None and "hand_bp33_xyz_body" in teach:
+        item["teacher_hand_xyz"]     = torch.from_numpy(
+            teach["hand_bp33_xyz_body"].astype(np.float32))
+        item["teacher_hand_present"] = torch.from_numpy(
+            teach["hand_bp33_present"].astype(np.float32))
+        item["teacher_hand_valid"]   = torch.tensor(1.0, dtype=torch.float32)
+    else:
+        item["teacher_hand_xyz"]     = torch.zeros(33, 3, dtype=torch.float32)
+        item["teacher_hand_present"] = torch.zeros(33, dtype=torch.float32)
+        item["teacher_hand_valid"]   = torch.tensor(0.0, dtype=torch.float32)
+
+
 # ─── Optional augmentation hook ───────────────────────────────────────────
 
 def maybe_load_aug_corpus():
@@ -240,23 +279,9 @@ class SynthDataset(Dataset):
             "mv_kp2d_norm":   torch.from_numpy(kp17_2d_norm.astype(np.float32)),
             "mv_present_2d":  torch.from_numpy(present17.astype(np.float32)),
         }
-        teach = self._load_teacher(rec["id"])
-        if teach is not None and "world33" in teach:
-            # Heavy teacher cache → port-format dict (pad 33 → 39)
-            world33 = teach["world33"][:, :3]                         # (33, 3)
-            world39 = np.zeros((39, 3), dtype=np.float32)
-            world39[:33] = world33
-            img33 = teach.get("img33", np.zeros((33, 5), dtype=np.float32))
-            img39 = np.zeros((39, 5), dtype=np.float32)
-            img39[:33] = img33
-            item["teacher_body_Identity"]   = torch.from_numpy(img39.flatten())
-            item["teacher_body_Identity_4"] = torch.from_numpy(world39.flatten())
-            # Hand teacher targets (BP idx 17-22): body-axis-aligned by cache_teachers
-            if "hand_bp33_xyz_body" in teach:
-                item["teacher_hand_xyz"]     = torch.from_numpy(
-                    teach["hand_bp33_xyz_body"].astype(np.float32))
-                item["teacher_hand_present"] = torch.from_numpy(
-                    teach["hand_bp33_present"].astype(np.float32))
+        # Always emit teacher tensors (zero placeholders + per-sample valid flag)
+        # so default_collate sees uniform keys across samples.  Loss gates on valid.
+        _attach_teacher_fields(item, self._load_teacher(rec["id"]))
         return item
 
 
@@ -418,23 +443,13 @@ class EgoExoTrainDataset(Dataset):
             "mv_kp2d_norm":   torch.from_numpy(kp17_2d_norm.astype(np.float32)),
             "mv_present_2d":  torch.from_numpy(present17_2d.astype(np.float32)),
         }
+        teach = None
         if self.teacher_cache_dir is not None:
             tp = self.teacher_cache_dir / f"{sample_id}.npz"
             if tp.exists():
                 d = np.load(tp)
-                if "world33" in d.files:
-                    world39 = np.zeros((39, 3), dtype=np.float32)
-                    world39[:33] = d["world33"][:, :3]
-                    img39 = np.zeros((39, 5), dtype=np.float32)
-                    if "img33" in d.files:
-                        img39[:33] = d["img33"]
-                    item["teacher_body_Identity"]   = torch.from_numpy(img39.flatten())
-                    item["teacher_body_Identity_4"] = torch.from_numpy(world39.flatten())
-                if "hand_bp33_xyz_body" in d.files:
-                    item["teacher_hand_xyz"]     = torch.from_numpy(
-                        d["hand_bp33_xyz_body"].astype(np.float32))
-                    item["teacher_hand_present"] = torch.from_numpy(
-                        d["hand_bp33_present"].astype(np.float32))
+                teach = {k: d[k] for k in d.files}
+        _attach_teacher_fields(item, teach)
         return item
 
 
