@@ -458,10 +458,46 @@ def main():
                 }
 
             s_out = student(img)
+
+            # One-shot diagnostic on first step: catch any NaN/Inf in the
+            # student output OR hard target before they pollute the loss.
+            if step == start_step + 1:
+                print(f"  [diag step={step}] dtype={dtype}  img range="
+                      f"[{img.float().min().item():.3f}, "
+                      f"{img.float().max().item():.3f}]")
+                for k, v in s_out.items():
+                    finite = torch.isfinite(v).all().item()
+                    print(f"  [diag] s_out[{k}] shape={tuple(v.shape)} "
+                          f"finite={finite} "
+                          f"min={v.float().min().item():.4g} "
+                          f"max={v.float().max().item():.4g}")
+                print(f"  [diag] hard.bp33_xyz_body finite="
+                      f"{torch.isfinite(hard['bp33_xyz_body']).all().item()} "
+                      f"max={hard['bp33_xyz_body'].float().abs().max().item():.4g}")
+                if teacher_body is not None:
+                    for k, v in teacher_body.items():
+                        if isinstance(v, torch.Tensor):
+                            print(f"  [diag] teacher_body[{k}] finite="
+                                  f"{torch.isfinite(v).all().item()}")
+
             losses = loss_fn(s_out, hard=hard, teacher_body=teacher_body,
                              teacher_hand=teacher_hand,
                              anchor=anchor_out, multiview=multiview)
             loss = losses["total"]
+
+            # NaN guard: skip optimizer step instead of polluting weights.
+            # Print which loss component blew up the first 3 times we hit it.
+            if not torch.isfinite(loss):
+                if not hasattr(main, "_nan_count"):
+                    main._nan_count = 0
+                main._nan_count += 1
+                if main._nan_count <= 3:
+                    bad = [k for k, v in losses.items()
+                           if not torch.isfinite(v).all().item()]
+                    print(f"  [WARN step={step}] non-finite loss; "
+                          f"components: {bad}; skipping optimizer step")
+                continue
+
             opt.zero_grad(set_to_none=True)
             loss.backward()
             torch.nn.utils.clip_grad_norm_(student.parameters(), args.grad_clip)

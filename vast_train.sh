@@ -46,6 +46,11 @@ BATCH="${BATCH:-96}"
 LR="${LR:-5e-5}"
 NUM_WORKERS="${NUM_WORKERS:-4}"
 EPOCHS="${EPOCHS:-20}"
+# BF16=1 (default) enables --bf16; set BF16=0 to fall back to fp32 for
+# debugging numerical issues (NaN / Inf).  fp32 is ~2× slower but stable.
+BF16="${BF16:-1}"
+BF16_FLAG=""
+[ "$BF16" != "0" ] && BF16_FLAG="--bf16"
 
 want_stage() { [ "$STAGE" = "all" ] || [ "$STAGE" = "$1" ]; }
 
@@ -146,7 +151,7 @@ if want_stage 4; then
         --teacher-cache /data/teacher_cache \
         --out-root /workspace/ckpts \
         --runs-root /workspace/runs \
-        --epochs "$EPOCHS" --batch-size "$BATCH" --lr "$LR" --bf16 --num-workers "$NUM_WORKERS" \
+        --epochs "$EPOCHS" --batch-size "$BATCH" --lr "$LR" $BF16_FLAG --num-workers "$NUM_WORKERS" \
         --ckpt-every-min 10 \
         "${EXTRA[@]}"
 fi
@@ -164,7 +169,7 @@ if want_stage 5; then
         --teacher-cache /data/teacher_cache \
         --out-root /workspace/ckpts \
         --runs-root /workspace/runs \
-        --epochs "$EPOCHS" --batch-size "$BATCH" --lr "$LR" --bf16 --num-workers "$NUM_WORKERS" \
+        --epochs "$EPOCHS" --batch-size "$BATCH" --lr "$LR" $BF16_FLAG --num-workers "$NUM_WORKERS" \
         --ckpt-every-min 10 \
         "${EXTRA[@]}"
 fi
