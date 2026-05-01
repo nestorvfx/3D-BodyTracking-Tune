@@ -150,15 +150,23 @@ def main():
                     default=HERE.parent / "assets" / "teachers")
     ap.add_argument("--include-hand", action="store_true")
     ap.add_argument("--include-face", action="store_true")
-    ap.add_argument("--limit", type=int, default=None)
+    ap.add_argument("--limit", type=int, default=None,
+                    help="Cap total work-list length (debugging / FAST smoke).")
+    # Multi-process sharding: each worker takes a non-overlapping slice
+    # of the work-list.  Launch N processes with --num-workers N and
+    # --worker-id 0..N-1; each writes to the same out-dir.
+    ap.add_argument("--worker-id",   type=int, default=0)
+    ap.add_argument("--num-workers", type=int, default=1)
+    ap.add_argument("--gpu", action="store_true",
+                    help="Use MediaPipe GPU delegate (TFLite GPU).")
     args = ap.parse_args()
 
     args.out_dir.mkdir(parents=True, exist_ok=True)
 
     paths = download_teacher_weights(args.teacher_dir)
-    heavy = HeavyTeacher(args.heavy_task)
-    hand  = HandTeacher(paths["hand"]) if args.include_hand else None
-    face  = FaceTeacher(paths["face"]) if args.include_face else None
+    heavy = HeavyTeacher(args.heavy_task, use_gpu=args.gpu)
+    hand  = HandTeacher(paths["hand"], use_gpu=args.gpu) if args.include_hand else None
+    face  = FaceTeacher(paths["face"], use_gpu=args.gpu) if args.include_face else None
 
     # Build the work list
     if args.labels_jsonl is not None:
@@ -166,17 +174,23 @@ def main():
         with args.labels_jsonl.open() as fh:
             for ln in fh:
                 records.append(json.loads(ln))
-        if args.limit:
-            records = records[: args.limit]
-        items = [(r["id"], args.source_dir / r["image_rel"]) for r in records]
+        items_full = [(r["id"], args.source_dir / r["image_rel"]) for r in records]
     else:
-        # Walk all images in source-dir
         exts = {".jpg", ".jpeg", ".png"}
         files = sorted(p for p in args.source_dir.rglob("*") if p.suffix.lower() in exts)
-        if args.limit:
-            files = files[: args.limit]
-        items = [(p.stem, p) for p in files]
-    print(f"[cache] {len(items)} frames to process")
+        items_full = [(p.stem, p) for p in files]
+    # Apply --limit BEFORE sharding so each worker gets a slice of the same set
+    if args.limit:
+        items_full = items_full[: args.limit]
+    # Multi-process sharding: stride by num_workers, offset by worker_id
+    if args.num_workers > 1:
+        items = [it for i, it in enumerate(items_full)
+                 if i % args.num_workers == args.worker_id]
+        print(f"[cache] worker {args.worker_id}/{args.num_workers}: "
+              f"{len(items)} of {len(items_full)} frames to process")
+    else:
+        items = items_full
+        print(f"[cache] {len(items)} frames to process")
 
     n_done = n_skip = n_no_detect = 0
     t0 = time.time()

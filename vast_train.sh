@@ -82,20 +82,54 @@ if want_stage 2; then
 fi
 
 # 3. Teacher cache -----------------------------------------------------
+# Heavy teacher covers all 33 BP joints (incl. face idx 0-10) — Face Mesh
+# is REDUNDANT and tripled inference cost.  Default: Heavy + Hand only.
+# Add SKIP_HAND_FACE=1 for Heavy-only runs (fastest possible KD signal).
+# Set INCLUDE_FACE=1 to opt back into Face Mesh KD (slow, marginal value).
 if want_stage 3; then
-    log "stage 3a: cache Heavy on synth"
     HAND_FACE_FLAGS=""
-    [ -z "${SKIP_HAND_FACE:-}" ] && HAND_FACE_FLAGS="--include-hand --include-face"
-    python3 training/cache_teachers.py \
-        --source-dir /data/synth --labels-jsonl /data/synth/labels.jsonl \
-        --out-dir /data/teacher_cache $HAND_FACE_FLAGS
+    [ -z "${SKIP_HAND_FACE:-}" ] && HAND_FACE_FLAGS="--include-hand"
+    [ -n "${INCLUDE_FACE:-}"   ] && HAND_FACE_FLAGS="$HAND_FACE_FLAGS --include-face"
+
+    # FAST=1 caps each pass to 2000 frames (smoke parity for the rest of the
+    # pipeline; final training will redo with full corpus).
+    LIMIT_FLAGS=""
+    [ -n "${FAST:-}" ] && LIMIT_FLAGS="--limit 2000"
+
+    # GPU delegate is roughly even with CPU on 0.10.33 (regression vs 0.10.20),
+    # but no worse — opt-in via TEACHER_GPU=1 if you want to test.
+    GPU_FLAG=""
+    [ -n "${TEACHER_GPU:-}" ] && GPU_FLAG="--gpu"
+
+    # Multi-process parallelism across N GPUs.  Default 4 (the box has 4).
+    # Each worker gets 1/N of the frames + pinned to its own GPU via
+    # CUDA_VISIBLE_DEVICES.  Set TEACHER_NPROC=1 to run sequentially.
+    NPROC="${TEACHER_NPROC:-4}"
+
+    log "stage 3a: cache teachers on synth ($NPROC parallel workers)"
+    pids=()
+    for ((i=0; i<NPROC; i++)); do
+        CUDA_VISIBLE_DEVICES=$i python3 training/cache_teachers.py \
+            --source-dir /data/synth --labels-jsonl /data/synth/labels.jsonl \
+            --out-dir /data/teacher_cache \
+            --worker-id "$i" --num-workers "$NPROC" \
+            $HAND_FACE_FLAGS $LIMIT_FLAGS $GPU_FLAG &
+        pids+=($!)
+    done
+    for p in "${pids[@]}"; do wait "$p" || log "[warn] cache worker $p failed"; done
 
     if [ -f /data/egoexo/manifest_train.jsonl ]; then
-        log "stage 3b: cache Heavy on Ego-Exo4D"
-        # cache_teachers walks images by source-dir; manifest-driven later if needed
-        python3 training/cache_teachers.py \
-            --source-dir /data/egoexo/frames \
-            --out-dir /data/teacher_cache $HAND_FACE_FLAGS
+        log "stage 3b: cache teachers on Ego-Exo4D ($NPROC parallel workers)"
+        pids=()
+        for ((i=0; i<NPROC; i++)); do
+            CUDA_VISIBLE_DEVICES=$i python3 training/cache_teachers.py \
+                --source-dir /data/egoexo/frames \
+                --out-dir /data/teacher_cache \
+                --worker-id "$i" --num-workers "$NPROC" \
+                $HAND_FACE_FLAGS $LIMIT_FLAGS $GPU_FLAG &
+            pids+=($!)
+        done
+        for p in "${pids[@]}"; do wait "$p" || log "[warn] cache worker $p failed"; done
     fi
 fi
 

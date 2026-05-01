@@ -28,13 +28,16 @@ class HeavyTeacher:
     directly through the official runtime).
     """
 
-    def __init__(self, task_path: Path):
+    def __init__(self, task_path: Path, use_gpu: bool = False):
         import mediapipe as mp
         from mediapipe.tasks import python as mp_python
         from mediapipe.tasks.python import vision as mp_vision
         self._mp = mp
+        delegate = (mp_python.BaseOptions.Delegate.GPU if use_gpu
+                    else mp_python.BaseOptions.Delegate.CPU)
         opts = mp_vision.PoseLandmarkerOptions(
-            base_options=mp_python.BaseOptions(model_asset_path=str(task_path)),
+            base_options=mp_python.BaseOptions(
+                model_asset_path=str(task_path), delegate=delegate),
             running_mode=mp_vision.RunningMode.IMAGE,
             num_poses=1,
             min_pose_detection_confidence=0.5,
@@ -71,13 +74,16 @@ class HandTeacher:
                    "hand_landmarker/hand_landmarker/float16/latest/"
                    "hand_landmarker.task")
 
-    def __init__(self, task_path: Path):
+    def __init__(self, task_path: Path, use_gpu: bool = False):
         import mediapipe as mp
         from mediapipe.tasks import python as mp_python
         from mediapipe.tasks.python import vision as mp_vision
         self._mp = mp
+        delegate = (mp_python.BaseOptions.Delegate.GPU if use_gpu
+                    else mp_python.BaseOptions.Delegate.CPU)
         opts = mp_vision.HandLandmarkerOptions(
-            base_options=mp_python.BaseOptions(model_asset_path=str(task_path)),
+            base_options=mp_python.BaseOptions(
+                model_asset_path=str(task_path), delegate=delegate),
             running_mode=mp_vision.RunningMode.IMAGE,
             num_hands=2,
             min_hand_detection_confidence=0.5,
@@ -113,13 +119,16 @@ class FaceTeacher:
                    "face_landmarker/face_landmarker/float16/latest/"
                    "face_landmarker.task")
 
-    def __init__(self, task_path: Path):
+    def __init__(self, task_path: Path, use_gpu: bool = False):
         import mediapipe as mp
         from mediapipe.tasks import python as mp_python
         from mediapipe.tasks.python import vision as mp_vision
         self._mp = mp
+        delegate = (mp_python.BaseOptions.Delegate.GPU if use_gpu
+                    else mp_python.BaseOptions.Delegate.CPU)
         opts = mp_vision.FaceLandmarkerOptions(
-            base_options=mp_python.BaseOptions(model_asset_path=str(task_path)),
+            base_options=mp_python.BaseOptions(
+                model_asset_path=str(task_path), delegate=delegate),
             running_mode=mp_vision.RunningMode.IMAGE,
             num_faces=1,
             min_face_detection_confidence=0.5,
