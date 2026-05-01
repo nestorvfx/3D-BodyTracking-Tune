@@ -44,7 +44,9 @@ SHO_R = COCO17.index("right-shoulder")    # 6
 def build_body_frame(kp17_cam: np.ndarray, present17: np.ndarray
                      ) -> tuple[np.ndarray | None, np.ndarray | None]:
     """Returns (R_cam_to_body (3,3), origin_cam (3,)) or (None, None) if
-    the four anchor joints (both hips + both shoulders) aren't visible."""
+    the four anchor joints (both hips + both shoulders) aren't visible
+    OR carry non-finite values (some synth labels store NaN sentinel for
+    occluded joints even when the visibility flag is set)."""
     if not (present17[HIP_L] and present17[HIP_R]
             and present17[SHO_L] and present17[SHO_R]):
         return None, None
@@ -53,6 +55,11 @@ def build_body_frame(kp17_cam: np.ndarray, present17: np.ndarray
     hip_r = kp17_cam[HIP_R]
     sho_l = kp17_cam[SHO_L]
     sho_r = kp17_cam[SHO_R]
+    # Reject NaN/Inf anchor values up front: a single NaN in any anchor
+    # propagates through R, origin, and every transformed joint.
+    if not (np.isfinite(hip_l).all() and np.isfinite(hip_r).all()
+            and np.isfinite(sho_l).all() and np.isfinite(sho_r).all()):
+        return None, None
 
     origin   = 0.5 * (hip_l + hip_r)               # mid-hip
     sho_mid  = 0.5 * (sho_l + sho_r)
@@ -82,13 +89,23 @@ def cam_to_body(kp_cam: np.ndarray, R_cam_to_body: np.ndarray,
 def map17_to_bp33(kp17_body: np.ndarray, present17: np.ndarray
                   ) -> tuple[np.ndarray, np.ndarray]:
     """Pad the 17-COCO body-frame KPs into a 33-BP shape (zero for non-mappable
-    indices).  Returns (kp33, present33)."""
+    indices).  Returns (kp33, present33).
+
+    Only copies values for joints with present=1.  Non-present joints stay
+    at zero so any NaN/garbage in the source array (synth's masked face
+    KPs may carry sentinel values) cannot propagate into the loss via the
+    `NaN * 0 = NaN` quirk in `F.smooth_l1_loss`.
+    """
     from lib.keypoint_map import BP_INDEX_FOR_COCO   # local import
     kp33 = np.zeros((33, 3), dtype=np.float32)
     pres33 = np.zeros(33, dtype=np.float32)
     for coco_idx, bp_idx in enumerate(BP_INDEX_FOR_COCO):
-        kp33[bp_idx]  = kp17_body[coco_idx]
-        pres33[bp_idx] = float(present17[coco_idx])
+        if present17[coco_idx]:
+            v = kp17_body[coco_idx]
+            if np.isfinite(v).all():
+                kp33[bp_idx] = v
+                pres33[bp_idx] = 1.0
+            # else: leave zero + mask 0 (defensive against rare NaN leak)
     return kp33, pres33
 
 
