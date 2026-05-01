@@ -96,7 +96,7 @@ if want_stage 4; then
         --teacher-cache /data/teacher_cache \
         --out-root /workspace/ckpts \
         --runs-root /workspace/runs \
-        --epochs 10 --batch-size 96 --lr 5e-5 --bf16 --num-workers 4 \
+        --epochs 20 --batch-size 96 --lr 5e-5 --bf16 --num-workers 4 \
         --ckpt-every-min 10 \
         "${EXTRA[@]}"
 fi
@@ -114,7 +114,7 @@ if want_stage 5; then
         --teacher-cache /data/teacher_cache \
         --out-root /workspace/ckpts \
         --runs-root /workspace/runs \
-        --epochs 10 --batch-size 96 --lr 5e-5 --bf16 --num-workers 4 \
+        --epochs 20 --batch-size 96 --lr 5e-5 --bf16 --num-workers 4 \
         --ckpt-every-min 10 \
         "${EXTRA[@]}"
 fi

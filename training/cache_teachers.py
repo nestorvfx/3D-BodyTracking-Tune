@@ -64,34 +64,71 @@ def cache_one(img_rgb: np.ndarray, heavy=None, hand=None, face=None) -> dict:
 
 
 def _build_hand_body(out: dict) -> None:
-    """Populate `out["hand_bp33_xyz_body"]` and `["hand_bp33_present"]` with
-    BP indices 17-22 set to the body-axis-aligned fingertip positions."""
-    world33 = out["world33"]                          # (33, 5) — Heavy's world
+    """Populate `out["hand_bp33_xyz_body"]` / `["hand_bp33_present"]` with
+    BP indices 17-22 set to body-axis-aligned fingertip positions.
+
+    SOTA hand-frame alignment (per audit gap 1):
+      1. Estimate forearm direction in body-axis from Heavy's
+         elbow→wrist vector  → defines hand_y (palm-towards-fingers).
+      2. Cross with body_x = (1, 0, 0)  → hand_z (out-of-palm).
+      3. Cross hand_y × hand_z  → hand_x (across palm).
+      4. Build R_hand_to_body, rotate Hand Landmarker's wrist-relative
+         fingertip into body frame, then translate by Heavy's wrist.
+
+    Falls back to translation-only when the elbow is missing.  Captures
+    the major rotation that broke the prior approximation at >30° wrist
+    roll (the dominant Hand-KD failure mode per the audit).
+    """
+    world33 = out["world33"]
     bp33_xyz   = np.zeros((33, 3), dtype=np.float32)
     bp33_present = np.zeros(33, dtype=np.float32)
-    # MP Hand fingertip indices: thumb=4, index=8, pinky=20
     fingertip_to_bp = {
         4:  (21, 22),   # thumb (L, R)
         8:  (19, 20),   # index
         20: (17, 18),   # pinky
     }
-    # BP wrist indices for left/right
-    BP_WRIST_L, BP_WRIST_R = 15, 16
-    wrist_l = world33[BP_WRIST_L, :3]
-    wrist_r = world33[BP_WRIST_R, :3]
-    for side in ("left", "right"):
+    BP_WRIST_L, BP_WRIST_R, BP_ELBOW_L, BP_ELBOW_R = 15, 16, 13, 14
+    wrist_l = world33[BP_WRIST_L, :3]; wrist_r = world33[BP_WRIST_R, :3]
+    elbow_l = world33[BP_ELBOW_L, :3]; elbow_r = world33[BP_ELBOW_R, :3]
+
+    def _hand_to_body_R(elbow, wrist):
+        """Build R_hand_to_body from forearm direction.  Returns identity
+        on degenerate input."""
+        forearm = wrist - elbow
+        n = np.linalg.norm(forearm)
+        if n < 1e-3:
+            return np.eye(3, dtype=np.float32)
+        hand_y = forearm / n                                # palm-up direction
+        body_x = np.array([1.0, 0.0, 0.0], dtype=np.float32)
+        hand_z = np.cross(hand_y, body_x)
+        nz = np.linalg.norm(hand_z)
+        if nz < 1e-3:
+            # forearm parallel to body_x; pick body_y instead
+            body_y = np.array([0.0, 1.0, 0.0], dtype=np.float32)
+            hand_z = np.cross(hand_y, body_y)
+            nz = np.linalg.norm(hand_z)
+            if nz < 1e-3:
+                return np.eye(3, dtype=np.float32)
+        hand_z /= nz
+        hand_x = np.cross(hand_y, hand_z)
+        return np.column_stack([hand_x, hand_y, hand_z]).astype(np.float32)
+
+    for side, wrist_anchor, elbow in [
+        ("left",  wrist_l, elbow_l),
+        ("right", wrist_r, elbow_r),
+    ]:
         key = f"hand_world_{side}"
         if key not in out:
             continue
-        hand_world = out[key]                          # (21, 3) wrist-relative
-        wrist_anchor = wrist_l if side == "left" else wrist_r
+        hand_world = out[key]                              # (21, 3)
+        R = _hand_to_body_R(elbow, wrist_anchor)
         for tip_idx, (bp_l, bp_r) in fingertip_to_bp.items():
             if tip_idx >= len(hand_world):
                 continue
-            # tip relative to hand-wrist origin (≈ 0,0,0)
-            tip_rel = hand_world[tip_idx] - hand_world[0]
+            tip_local = hand_world[tip_idx] - hand_world[0]   # wrist-relative
+            tip_body  = wrist_anchor + R @ tip_local
             bp = bp_l if side == "left" else bp_r
-            bp33_xyz[bp]   = wrist_anchor + tip_rel
+            bp33_xyz[bp]   = tip_body
             bp33_present[bp] = 1.0
     if bp33_present.sum() > 0:
         out["hand_bp33_xyz_body"]   = bp33_xyz

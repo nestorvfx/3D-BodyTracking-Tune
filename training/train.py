@@ -188,6 +188,48 @@ def benchmark_eval(student, device, dtype, max_takes: int = 5) -> dict:
             "bench_note": "ok"}
 
 
+@torch.no_grad()
+def per_keypoint_breakdown(student, anchor, val_loader, device, dtype) -> dict:
+    """Per-BP-index drift vs frozen v1 (1-of-33 bars to TensorBoard).
+
+    Catches "fingers regress while wrists improve" — the failure mode a
+    single PA-MPJPE number won't show.  Also reports visibility AUC so
+    we'd see visibility-flag drift before it breaks the smoothing graph.
+    """
+    import numpy as np
+    per_joint_drift = []
+    vis_pred = []
+    vis_anchor = []
+    n = 0
+    for batch in val_loader:
+        if n >= 64:
+            break
+        img = batch["image"].to(device).to(dtype)
+        s_out = student(img)
+        a_out = anchor(img)
+        s_w = s_out["Identity_4"].view(-1, 39, 3)[:, :33]
+        a_w = a_out["Identity_4"].view(-1, 39, 3)[:, :33]
+        per_joint_drift.append((s_w - a_w).abs().mean(-1).cpu().float().numpy())
+        s_kp = s_out["Identity"].view(-1, 39, 5)
+        a_kp = a_out["Identity"].view(-1, 39, 5)
+        vis_pred.append(s_kp[:, :33, 3].cpu().float().numpy())
+        vis_anchor.append(a_kp[:, :33, 3].cpu().float().numpy())
+        n += img.shape[0]
+    if not per_joint_drift:
+        return {}
+    pj = np.concatenate(per_joint_drift, axis=0).mean(axis=0)   # (33,) metres
+    vp = np.concatenate(vis_pred,    axis=0)
+    va = np.concatenate(vis_anchor,  axis=0)
+    out = {f"per_kp_drift_{i}_mm": float(pj[i] * 1000) for i in range(33)}
+    out["per_kp_drift_max_mm"] = float(pj.max() * 1000)
+    out["per_kp_drift_mean_mm"] = float(pj.mean() * 1000)
+    # Visibility flag agreement: AUC-style — fraction of joints where pred
+    # and anchor agree (>0.5 vs <0.5).  Drops if student forgets v1's
+    # visibility calibration.
+    out["vis_agreement_pct"] = float(((vp > 0.5) == (va > 0.5)).mean() * 100)
+    return out
+
+
 # ─── Main ─────────────────────────────────────────────────────────────────
 
 def main():
@@ -202,7 +244,10 @@ def main():
                     help="Pre-cached teacher .npz dir; if missing, run Heavy live.")
     ap.add_argument("--out-root",       type=Path, default=Path("/workspace/ckpts"))
     ap.add_argument("--runs-root",      type=Path, default=Path("/workspace/runs"))
-    ap.add_argument("--epochs",         type=int,   default=10)
+    ap.add_argument("--epochs",         type=int,   default=20,
+                    help="Patient-KD literature (Beyer 2022) recommends 3-10x "
+                         "longer than supervised training; 20 is a sane default "
+                         "for a 12-hr A100 run on ~750k samples.")
     ap.add_argument("--batch-size",     type=int,   default=96)
     ap.add_argument("--lr",             type=float, default=5e-5)
     ap.add_argument("--weight-decay",   type=float, default=1e-4)
@@ -415,18 +460,23 @@ def main():
                 print(f"  [ckpt] -> {ckpt_path}")
                 t_last_ckpt = time.time()
 
-        # End-of-epoch validation: anchor drift + actual benchmark PA-MPJPE
+        # End-of-epoch validation: anchor drift + benchmark PA-MPJPE
+        # + per-keypoint breakdown + visibility-flag agreement
         student.eval()
         val_metrics = quick_val(student, anchor, val_loader, device, dtype)
         bench_metrics = benchmark_eval(student, device, dtype, max_takes=5)
-        all_metrics = {**val_metrics, **bench_metrics}
+        per_kp_metrics = per_keypoint_breakdown(student, anchor, val_loader,
+                                                device, dtype)
+        all_metrics = {**val_metrics, **bench_metrics, **per_kp_metrics}
         for k, v in all_metrics.items():
             if isinstance(v, (int, float)):
                 writer.add_scalar(f"val/{k}", v, step)
         student.train()
-        print(f"  === epoch {epoch+1}/{args.epochs}  drift={val_metrics['val_anchor_drift_m']:.4f}  "
-              f"BENCH_PA_MPJPE={bench_metrics['bench_pa_mpjpe_mm']:.1f} mm  "
-              f"(N={bench_metrics['bench_n_frames']}, {bench_metrics['bench_note']})")
+        print(f"  === epoch {epoch+1}/{args.epochs}  "
+              f"drift={val_metrics['val_anchor_drift_m']:.4f}  "
+              f"BENCH_PA_MPJPE={bench_metrics['bench_pa_mpjpe_mm']:.1f}mm  "
+              f"per_kp_max={per_kp_metrics.get('per_kp_drift_max_mm', float('nan')):.1f}mm  "
+              f"vis_agree={per_kp_metrics.get('vis_agreement_pct', 0):.1f}%")
 
     # Final save
     final = args.out_root / f"{args.variant}_final.pt"

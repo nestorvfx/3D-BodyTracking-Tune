@@ -208,6 +208,26 @@ into the `Buffer` table with inverse permutations from §2.3. The op graph
 is unchanged so the pose graph keeps working and tensor names are preserved
 verbatim. Same byte-level surgery as the import walker, run backwards.
 
+### 2.8 Export-time gotchas (audit gap 5)
+
+The MediaPipe pose graph reads outputs by **index**, not by SignatureDef
+name, so the `forward()` return-tuple ordering must exactly match v1:
+`Identity` (kp 195), `Identity_1` (presence 1), `Identity_2` (seg
+256×256×1), `Identity_3` (heatmap 64×64×39), `Identity_4` (world 117).
+Verify post-export with **Netron** (MIT, https://github.com/lutzroeder/netron):
+diff the v2 `.tflite` op graph against v1 — only the constant Buffers
+should differ.
+
+INT8 post-training quantisation of the segmentation decoder breaks the
+fractional-coordinate decoder downstream; **keep the kp + world heads in
+fp16 minimum**.  AI Edge Torch's default fp32 export is safest;
+quantisation is only worth it if the on-device latency budget is tight.
+
+End-to-end validation: load the exported `.task` through
+`mediapipe.tasks.python.vision.PoseLandmarker.create_from_options()` on
+a sample image — if it instantiates without "tensor count mismatch" /
+"signature not found" errors, the graph is consumable.
+
 ---
 
 ## 3. Multi-teacher distillation (Q4-Q5)
