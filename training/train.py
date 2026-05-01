@@ -30,9 +30,17 @@ import time
 from pathlib import Path
 
 import torch
+import torch.distributed as dist
 import torch.nn.functional as F
+from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader
+from torch.utils.data.distributed import DistributedSampler
 from torch.utils.tensorboard import SummaryWriter
+
+
+def _unwrap(m: torch.nn.Module) -> torch.nn.Module:
+    """Return the underlying model when wrapped in DDP, else `m` itself."""
+    return m.module if hasattr(m, "module") else m
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent / "model"))
@@ -268,23 +276,46 @@ def main():
 
     sys.stdout.reconfigure(line_buffering=True)
     torch.manual_seed(args.seed)
-    device = torch.device(args.device or ("cuda" if torch.cuda.is_available() else "cpu"))
+
+    # ── Distributed setup (torchrun-launched) ────────────────────────────
+    # When LOCAL_RANK is set in env, we're under torchrun → init NCCL,
+    # pin to per-rank GPU.  Otherwise fall back to single-GPU mode.
+    local_rank = int(os.environ.get("LOCAL_RANK", -1))
+    world_size = int(os.environ.get("WORLD_SIZE", 1))
+    is_dist = world_size > 1 and local_rank >= 0
+    if is_dist:
+        dist.init_process_group(backend="nccl")
+        torch.cuda.set_device(local_rank)
+        device = torch.device(f"cuda:{local_rank}")
+        rank = dist.get_rank()
+    else:
+        rank = 0
+        device = torch.device(args.device or ("cuda" if torch.cuda.is_available() else "cpu"))
+    is_main = (rank == 0)
+
     dtype  = torch.bfloat16 if (args.bf16 and device.type == "cuda") else torch.float32
-    args.out_root.mkdir(parents=True, exist_ok=True)
-    args.runs_root.mkdir(parents=True, exist_ok=True)
-    run_dir = args.runs_root / f"v2_{args.variant}_{int(time.time())}"
-    run_dir.mkdir(exist_ok=True)
-    writer = SummaryWriter(log_dir=run_dir)
-    print(f"[train] device={device}  dtype={dtype}  variant={args.variant}")
-    print(f"[train] run_dir={run_dir}")
+
+    if is_main:
+        args.out_root.mkdir(parents=True, exist_ok=True)
+        args.runs_root.mkdir(parents=True, exist_ok=True)
+        run_dir = args.runs_root / f"v2_{args.variant}_{int(time.time())}"
+        run_dir.mkdir(exist_ok=True)
+        writer = SummaryWriter(log_dir=run_dir)
+        print(f"[train] device={device}  dtype={dtype}  variant={args.variant}  "
+              f"world_size={world_size}  rank={rank}")
+        print(f"[train] run_dir={run_dir}")
+    else:
+        writer = None
 
     # ── Models ──────────────────────────────────────────────────────────
     student_task = ASSETS / f"pose_landmarker_{args.variant}.task"
-    print(f"[train] loading student from {student_task}")
+    if is_main:
+        print(f"[train] loading student from {student_task}")
     student, _ = load_task(student_task)
     student.train().to(device).to(dtype)
 
-    print(f"[train] loading frozen anchor (v1 weights)")
+    if is_main:
+        print(f"[train] loading frozen anchor (v1 weights)")
     anchor, _ = load_task(student_task)
     for p in anchor.parameters():
         p.requires_grad_(False)
@@ -293,8 +324,9 @@ def main():
     # Heavy teacher: only live if we don't have a cache for *every* sample
     teacher = None
     if args.teacher_cache is None or not args.teacher_cache.exists():
-        print(f"[train] loading Heavy teacher live (slow CPU/GPU; "
-              f"prefer pre-cached teachers via prep/cache_teachers.py)")
+        if is_main:
+            print(f"[train] loading Heavy teacher live (slow CPU/GPU; "
+                  f"prefer pre-cached teachers via prep/cache_teachers.py)")
         teacher, _ = load_task(ASSETS / "pose_landmarker_heavy.task")
         for p in teacher.parameters():
             p.requires_grad_(False)
@@ -322,7 +354,8 @@ def main():
     # use a small slice of the train side as a degenerate "val" so the
     # validation hooks still produce numbers.
     if len(synth_val_ds) == 0:
-        print("[train] no val records — using first 32 of train as smoke val")
+        if is_main:
+            print("[train] no val records — using first 32 of train as smoke val")
         synth_val_ds = SynthDataset(
             labels_jsonl=args.synth_root / "labels.jsonl",
             images_root=args.synth_root,
@@ -346,17 +379,38 @@ def main():
         assert_no_leakage(manifest_uids, forbidden_m, forbidden_s)
         train_ds = MixedDataset(synth_ds, ego_ds, synth_ratio=args.synth_ratio)
     else:
-        print(f"[train] no Ego-Exo4D manifest — synth-only training")
+        if is_main:
+            print(f"[train] no Ego-Exo4D manifest — synth-only training")
         train_ds = synth_ds
 
-    # Validation loader uses the held-out synth val split (AR-replay tracker).
+    # Validation loader (rank 0 only — runs on the unwrapped module)
     val_loader = DataLoader(synth_val_ds, batch_size=min(args.batch_size, 8),
                             shuffle=False, num_workers=args.num_workers,
-                            persistent_workers=args.num_workers > 0)
-    train_loader = DataLoader(train_ds, batch_size=args.batch_size,
-                              shuffle=True, num_workers=args.num_workers,
-                              persistent_workers=args.num_workers > 0,
-                              drop_last=True)
+                            persistent_workers=args.num_workers > 0) if is_main else None
+
+    # Train loader: DistributedSampler shards data across ranks when DDP-launched
+    if is_dist:
+        train_sampler = DistributedSampler(train_ds, shuffle=True, drop_last=True)
+        train_loader = DataLoader(train_ds, batch_size=args.batch_size,
+                                  sampler=train_sampler,
+                                  num_workers=args.num_workers,
+                                  persistent_workers=args.num_workers > 0,
+                                  drop_last=True)
+    else:
+        train_sampler = None
+        train_loader = DataLoader(train_ds, batch_size=args.batch_size,
+                                  shuffle=True, num_workers=args.num_workers,
+                                  persistent_workers=args.num_workers > 0,
+                                  drop_last=True)
+
+    # ── DDP wrap (after model is on device, before optimizer is built so the
+    #              optimizer sees the wrapped params) ────────────────────────
+    if is_dist:
+        # find_unused_parameters=True: the student computes Identity_2/3 (seg
+        # + heatmap) which the loss doesn't consume — those head params don't
+        # receive gradients each step, so DDP must allow it.
+        student = DDP(student, device_ids=[local_rank],
+                      find_unused_parameters=True)
 
     # ── Optim + sched + EMA ─────────────────────────────────────────────
     opt = torch.optim.AdamW(student.parameters(), lr=args.lr,
@@ -366,36 +420,48 @@ def main():
     # the in-class mask), while the supervised joints see ~0.4 × 0.2 = 0.08
     # which is below L_hard / L_kd_body so they're still teacher-driven.
     loss_fn = V2DistillationLoss(lam_anchor=0.4)
-    ema = EMA(student, decay=args.ema_decay)
+    # EMA shadow weights live only on rank 0 (DDP keeps replicas in sync, so
+    # rank 0's copy is canonical).  Saves 3× memory on a 4-GPU box.
+    ema = EMA(_unwrap(student), decay=args.ema_decay) if is_main else None
     total_steps = len(train_loader) * args.epochs
 
     # ── Resume ──────────────────────────────────────────────────────────
+    # Every rank loads the same checkpoint (state_dict is identical across
+    # ranks anyway, since DDP all-reduces gradients).  Strip "module." prefix
+    # if present so the saved-without-DDP and saved-with-DDP forms interop.
+    def _load_student_state(d):
+        sd = {k.removeprefix("module."): v for k, v in d.items()}
+        _unwrap(student).load_state_dict(sd)
+
     start_step = 0
+    resume_ckpt = None
     if args.resume and args.resume.exists():
-        print(f"[train] resuming from {args.resume}")
-        ckpt = torch.load(args.resume, map_location=device, weights_only=False)
-        student.load_state_dict(ckpt["student"])
-        opt.load_state_dict(ckpt["opt"])
-        ema.shadow = {k: v.to(device) for k, v in ckpt["ema"].items()}
-        start_step = ckpt.get("step", 0)
-        print(f"[train] resumed at step {start_step}")
+        resume_ckpt = args.resume
     else:
-        # Find latest in out_root
         latest = sorted(args.out_root.glob(f"{args.variant}_step*.pt"))
         if latest:
-            print(f"[train] auto-resume: {latest[-1]}")
-            ckpt = torch.load(latest[-1], map_location=device, weights_only=False)
-            student.load_state_dict(ckpt["student"])
-            opt.load_state_dict(ckpt["opt"])
+            resume_ckpt = latest[-1]
+    if resume_ckpt is not None:
+        if is_main:
+            print(f"[train] resuming from {resume_ckpt}")
+        ckpt = torch.load(resume_ckpt, map_location=device, weights_only=False)
+        _load_student_state(ckpt["student"])
+        opt.load_state_dict(ckpt["opt"])
+        if is_main and ema is not None:
             ema.shadow = {k: v.to(device) for k, v in ckpt["ema"].items()}
-            start_step = ckpt.get("step", 0)
+        start_step = ckpt.get("step", 0)
+        if is_main:
+            print(f"[train] resumed at step {start_step}")
 
     # ── Train loop ──────────────────────────────────────────────────────
     step = start_step
     t_last_ckpt = time.time()
-    print(f"[train] starting at step {step}/{total_steps}  "
-          f"({len(train_loader)} steps/epoch × {args.epochs} epochs)")
+    if is_main:
+        print(f"[train] starting at step {step}/{total_steps}  "
+              f"({len(train_loader)} steps/epoch × {args.epochs} epochs)")
     for epoch in range(args.epochs):
+        if train_sampler is not None:
+            train_sampler.set_epoch(epoch)
         for batch in train_loader:
             step += 1
             # LR sched
@@ -459,27 +525,6 @@ def main():
 
             s_out = student(img)
 
-            # One-shot diagnostic on first step: catch any NaN/Inf in the
-            # student output OR hard target before they pollute the loss.
-            if step == start_step + 1:
-                print(f"  [diag step={step}] dtype={dtype}  img range="
-                      f"[{img.float().min().item():.3f}, "
-                      f"{img.float().max().item():.3f}]")
-                for k, v in s_out.items():
-                    finite = torch.isfinite(v).all().item()
-                    print(f"  [diag] s_out[{k}] shape={tuple(v.shape)} "
-                          f"finite={finite} "
-                          f"min={v.float().min().item():.4g} "
-                          f"max={v.float().max().item():.4g}")
-                print(f"  [diag] hard.bp33_xyz_body finite="
-                      f"{torch.isfinite(hard['bp33_xyz_body']).all().item()} "
-                      f"max={hard['bp33_xyz_body'].float().abs().max().item():.4g}")
-                if teacher_body is not None:
-                    for k, v in teacher_body.items():
-                        if isinstance(v, torch.Tensor):
-                            print(f"  [diag] teacher_body[{k}] finite="
-                                  f"{torch.isfinite(v).all().item()}")
-
             losses = loss_fn(s_out, hard=hard, teacher_body=teacher_body,
                              teacher_hand=teacher_hand,
                              anchor=anchor_out, multiview=multiview)
@@ -491,7 +536,7 @@ def main():
                 if not hasattr(main, "_nan_count"):
                     main._nan_count = 0
                 main._nan_count += 1
-                if main._nan_count <= 3:
+                if main._nan_count <= 3 and is_main:
                     bad = [k for k, v in losses.items()
                            if not torch.isfinite(v).all().item()]
                     print(f"  [WARN step={step}] non-finite loss; "
@@ -502,10 +547,11 @@ def main():
             loss.backward()
             torch.nn.utils.clip_grad_norm_(student.parameters(), args.grad_clip)
             opt.step()
-            ema.update(student)
+            if ema is not None:
+                ema.update(_unwrap(student))
 
-            # Log
-            if step % 20 == 0:
+            # Log (rank 0 only)
+            if is_main and step % 20 == 0:
                 writer.add_scalar("train/lr", lr, step)
                 for k, v in losses.items():
                     writer.add_scalar(f"train/{k}", v.item(), step)
@@ -514,47 +560,57 @@ def main():
                       f"kd_b={losses['L_kd_body'].item():.4f}  "
                       f"anchor={losses['L_anchor'].item():.4f}  lr={lr:.2e}")
 
-            # Periodic checkpoint
-            if (time.time() - t_last_ckpt) > args.ckpt_every_min * 60:
+            # Periodic checkpoint (rank 0 only)
+            if is_main and (time.time() - t_last_ckpt) > args.ckpt_every_min * 60:
                 ckpt_path = args.out_root / f"{args.variant}_step{step:07d}.pt"
                 torch.save({
-                    "student": student.state_dict(),
-                    "ema":     ema.shadow,
+                    "student": _unwrap(student).state_dict(),
+                    "ema":     ema.shadow if ema is not None else None,
                     "opt":     opt.state_dict(),
                     "step":    step,
                 }, ckpt_path)
                 print(f"  [ckpt] -> {ckpt_path}")
                 t_last_ckpt = time.time()
 
-        # End-of-epoch validation: anchor drift + benchmark PA-MPJPE
-        # + per-keypoint breakdown + visibility-flag agreement
-        student.eval()
-        val_metrics = quick_val(student, anchor, val_loader, device, dtype)
-        bench_metrics = benchmark_eval(student, device, dtype, max_takes=5)
-        per_kp_metrics = per_keypoint_breakdown(student, anchor, val_loader,
-                                                device, dtype)
-        all_metrics = {**val_metrics, **bench_metrics, **per_kp_metrics}
-        for k, v in all_metrics.items():
-            if isinstance(v, (int, float)):
-                writer.add_scalar(f"val/{k}", v, step)
-        student.train()
-        print(f"  === epoch {epoch+1}/{args.epochs}  "
-              f"drift={val_metrics['val_anchor_drift_m']:.4f}  "
-              f"BENCH_PA_MPJPE={bench_metrics['bench_pa_mpjpe_mm']:.1f}mm  "
-              f"per_kp_max={per_kp_metrics.get('per_kp_drift_max_mm', float('nan')):.1f}mm  "
-              f"vis_agree={per_kp_metrics.get('vis_agreement_pct', 0):.1f}%")
+        # End-of-epoch validation (rank 0 only — runs on the unwrapped module
+        # so DDP forward synchronization isn't required here).
+        if is_main:
+            eval_model = _unwrap(student)
+            eval_model.eval()
+            val_metrics = quick_val(eval_model, anchor, val_loader, device, dtype)
+            bench_metrics = benchmark_eval(eval_model, device, dtype, max_takes=5)
+            per_kp_metrics = per_keypoint_breakdown(eval_model, anchor, val_loader,
+                                                    device, dtype)
+            all_metrics = {**val_metrics, **bench_metrics, **per_kp_metrics}
+            for k, v in all_metrics.items():
+                if isinstance(v, (int, float)):
+                    writer.add_scalar(f"val/{k}", v, step)
+            eval_model.train()
+            print(f"  === epoch {epoch+1}/{args.epochs}  "
+                  f"drift={val_metrics['val_anchor_drift_m']:.4f}  "
+                  f"BENCH_PA_MPJPE={bench_metrics['bench_pa_mpjpe_mm']:.1f}mm  "
+                  f"per_kp_max={per_kp_metrics.get('per_kp_drift_max_mm', float('nan')):.1f}mm  "
+                  f"vis_agree={per_kp_metrics.get('vis_agreement_pct', 0):.1f}%")
+        # All ranks wait for rank 0 to finish val before starting next epoch
+        if is_dist:
+            dist.barrier()
 
-    # Final save
-    final = args.out_root / f"{args.variant}_final.pt"
-    ema.apply_to(student)
-    torch.save({
-        "student": student.state_dict(),
-        "ema":     ema.shadow,
-        "opt":     opt.state_dict(),
-        "step":    step,
-    }, final)
-    print(f"[train] DONE -> {final}")
-    writer.close()
+    # Final save (rank 0 only — applies EMA to the underlying module)
+    if is_main:
+        final = args.out_root / f"{args.variant}_final.pt"
+        if ema is not None:
+            ema.apply_to(_unwrap(student))
+        torch.save({
+            "student": _unwrap(student).state_dict(),
+            "ema":     ema.shadow if ema is not None else None,
+            "opt":     opt.state_dict(),
+            "step":    step,
+        }, final)
+        print(f"[train] DONE -> {final}")
+        writer.close()
+    if is_dist:
+        dist.barrier()
+        dist.destroy_process_group()
     return 0
 
 

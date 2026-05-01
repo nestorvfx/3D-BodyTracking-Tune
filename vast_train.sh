@@ -37,20 +37,30 @@ ROOT="$(pwd)"
 STAGE="${STAGE:-all}"
 
 # Knobs (env overrides) --------------------------------------------------
-# BATCH        per-GPU batch size for stages 4 + 5 (default 96, drop to 32
-#              for 16 GB cards like RTX 5070 Ti)
+# BATCH        per-GPU batch size for stages 4 + 5 (default 32 for the
+#              16 GB 5070 Ti box; bump to 96 on 24 GB+ cards)
 # LR           AdamW peak LR (default 5e-5)
 # NUM_WORKERS  dataloader workers per rank (default 4)
 # EPOCHS       training epochs (default 20; FAST=1 forces 1)
-BATCH="${BATCH:-96}"
+# NPROC_TRAIN  number of GPUs for stages 4+5 DDP (auto-detect from nvidia-smi
+#              if unset; set to 1 to force single-GPU)
+# LIMIT_SYNTH / LIMIT_EGOEXO  cap dataset size (empty = unlimited).  Useful
+#              for the *first* production run to verify convergence before
+#              committing to the full 133k-synth + ~600k-egoexo run.
+BATCH="${BATCH:-32}"
 LR="${LR:-5e-5}"
 NUM_WORKERS="${NUM_WORKERS:-4}"
 EPOCHS="${EPOCHS:-20}"
+NPROC_TRAIN="${NPROC_TRAIN:-$(nvidia-smi --query-gpu=count --format=csv,noheader 2>/dev/null | head -1 || echo 1)}"
 # BF16=1 (default) enables --bf16; set BF16=0 to fall back to fp32 for
 # debugging numerical issues (NaN / Inf).  fp32 is ~2× slower but stable.
 BF16="${BF16:-1}"
 BF16_FLAG=""
 [ "$BF16" != "0" ] && BF16_FLAG="--bf16"
+
+TRAIN_LIMIT_FLAGS=()
+[ -n "${LIMIT_SYNTH:-}" ]  && TRAIN_LIMIT_FLAGS+=(--limit-synth  "$LIMIT_SYNTH")
+[ -n "${LIMIT_EGOEXO:-}" ] && TRAIN_LIMIT_FLAGS+=(--limit-egoexo "$LIMIT_EGOEXO")
 
 want_stage() { [ "$STAGE" = "all" ] || [ "$STAGE" = "$1" ]; }
 
@@ -96,10 +106,18 @@ if want_stage 3; then
     [ -z "${SKIP_HAND_FACE:-}" ] && HAND_FACE_FLAGS="--include-hand"
     [ -n "${INCLUDE_FACE:-}"   ] && HAND_FACE_FLAGS="$HAND_FACE_FLAGS --include-face"
 
-    # FAST=1 caps each pass to 2000 frames (smoke parity for the rest of the
-    # pipeline; final training will redo with full corpus).
-    LIMIT_FLAGS=""
-    [ -n "${FAST:-}" ] && LIMIT_FLAGS="--limit 2000"
+    # Cache only the frames training will actually consume.  FAST=1 caps both
+    # passes to 2000 frames (smoke parity).  Otherwise track LIMIT_SYNTH /
+    # LIMIT_EGOEXO so a "first production" run doesn't burn ~7 hr caching
+    # frames it'll never see.  Empty = full corpus.
+    SYNTH_CACHE_LIMIT=""
+    EGOEXO_CACHE_LIMIT=""
+    [ -n "${LIMIT_SYNTH:-}" ]  && SYNTH_CACHE_LIMIT="--limit $LIMIT_SYNTH"
+    [ -n "${LIMIT_EGOEXO:-}" ] && EGOEXO_CACHE_LIMIT="--limit $LIMIT_EGOEXO"
+    if [ -n "${FAST:-}" ]; then
+        SYNTH_CACHE_LIMIT="--limit 2000"
+        EGOEXO_CACHE_LIMIT="--limit 2000"
+    fi
 
     # GPU delegate is roughly even with CPU on 0.10.33 (regression vs 0.10.20),
     # but no worse — opt-in via TEACHER_GPU=1 if you want to test.
@@ -118,7 +136,7 @@ if want_stage 3; then
             --source-dir /data/synth --labels-jsonl /data/synth/labels.jsonl \
             --out-dir /data/teacher_cache \
             --worker-id "$i" --num-workers "$NPROC" \
-            $HAND_FACE_FLAGS $LIMIT_FLAGS $GPU_FLAG &
+            $HAND_FACE_FLAGS $SYNTH_CACHE_LIMIT $GPU_FLAG &
         pids+=($!)
     done
     for p in "${pids[@]}"; do wait "$p" || log "[warn] cache worker $p failed"; done
@@ -131,7 +149,7 @@ if want_stage 3; then
                 --source-dir /data/egoexo/frames \
                 --out-dir /data/teacher_cache \
                 --worker-id "$i" --num-workers "$NPROC" \
-                $HAND_FACE_FLAGS $LIMIT_FLAGS $GPU_FLAG &
+                $HAND_FACE_FLAGS $EGOEXO_CACHE_LIMIT $GPU_FLAG &
             pids+=($!)
         done
         for p in "${pids[@]}"; do wait "$p" || log "[warn] cache worker $p failed"; done
@@ -139,11 +157,18 @@ if want_stage 3; then
 fi
 
 # 4. Lite training -----------------------------------------------------
+# Multi-GPU via torchrun: NPROC_TRAIN ranks, each pinned to its own GPU.
+# The training loop wraps the student in DistributedDataParallel and shards
+# data across ranks via DistributedSampler — effective batch = NPROC × BATCH.
+TRAIN_CMD=(torchrun --standalone --nproc-per-node="$NPROC_TRAIN")
+[ "$NPROC_TRAIN" = "1" ] && TRAIN_CMD=(python3)
+
 if want_stage 4; then
-    log "stage 4: train Lite v2"
+    log "stage 4: train Lite v2  (DDP nproc=$NPROC_TRAIN, batch/rank=$BATCH, "
+    log "         effective batch=$((NPROC_TRAIN * BATCH)))"
     EXTRA=()
     [ -n "${FAST:-}" ] && EXTRA+=(--limit-synth 5000 --limit-egoexo 10000 --epochs 1)
-    python3 training/train.py \
+    "${TRAIN_CMD[@]}" training/train.py \
         --variant lite \
         --synth-root /data/synth \
         --egoexo-root /data/egoexo \
@@ -153,15 +178,17 @@ if want_stage 4; then
         --runs-root /workspace/runs \
         --epochs "$EPOCHS" --batch-size "$BATCH" --lr "$LR" $BF16_FLAG --num-workers "$NUM_WORKERS" \
         --ckpt-every-min 10 \
+        "${TRAIN_LIMIT_FLAGS[@]}" \
         "${EXTRA[@]}"
 fi
 
 # 5. Full training -----------------------------------------------------
 if want_stage 5; then
-    log "stage 5: train Full v2"
+    log "stage 5: train Full v2  (DDP nproc=$NPROC_TRAIN, batch/rank=$BATCH, "
+    log "         effective batch=$((NPROC_TRAIN * BATCH)))"
     EXTRA=()
     [ -n "${FAST:-}" ] && EXTRA+=(--limit-synth 5000 --limit-egoexo 10000 --epochs 1)
-    python3 training/train.py \
+    "${TRAIN_CMD[@]}" training/train.py \
         --variant full \
         --synth-root /data/synth \
         --egoexo-root /data/egoexo \
@@ -171,6 +198,7 @@ if want_stage 5; then
         --runs-root /workspace/runs \
         --epochs "$EPOCHS" --batch-size "$BATCH" --lr "$LR" $BF16_FLAG --num-workers "$NUM_WORKERS" \
         --ckpt-every-min 10 \
+        "${TRAIN_LIMIT_FLAGS[@]}" \
         "${EXTRA[@]}"
 fi
 
