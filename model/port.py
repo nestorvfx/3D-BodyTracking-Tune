@@ -131,7 +131,19 @@ class BlazePosePort(nn.Module):
     DEQUANTIZE ops are folded into parameter loading at __init__ time.
     """
 
-    def __init__(self, tflite_path: Path):
+    # Outputs we keep alive in the forward graph during training/eval.
+    # Identity_2 (segmentation 256x256) and Identity_3 (heatmap 64x64x39) are
+    # not consumed by any of our loss terms — eliminating their compute
+    # graph saves ~15-25% of forward+backward FLOPs per step, AND makes
+    # find_unused_parameters=False valid in DDP (since their head params
+    # are no longer in the autograd graph at all).
+    #
+    # Set DROPPED_OUTPUTS to None to disable elision (e.g., for export-time
+    # weight inspection, when you DO want the full state_dict touched).
+    LIVE_OUTPUTS = ("Identity", "Identity_1", "Identity_4")
+    DROPPED_OUTPUTS = ("Identity_2", "Identity_3")
+
+    def __init__(self, tflite_path: Path, *, elide_dead_ops: bool = True):
         super().__init__()
         buf = Path(tflite_path).read_bytes()
         self.model = tflite.Model.GetRootAsModel(buf, 0)
@@ -144,6 +156,14 @@ class BlazePosePort(nn.Module):
         self._consts: dict[int, torch.Tensor] = {}     # non-trainable scalars/shapes
         self._ops: list[dict[str, Any]] = []
         self._build()
+
+        # Compute the set of "live" op indices via backward graph reachability
+        # from LIVE_OUTPUTS.  Ops that only contribute to DROPPED_OUTPUTS are
+        # excluded from forward and their weights frozen.
+        self._live_op_indices: set[int] | None = None
+        self._live_output_idxs: set[int] = set(self.output_idx)
+        if elide_dead_ops:
+            self._compute_live_set()
 
     # ----- build -------------------------------------------------------
     def _build(self):
@@ -278,6 +298,69 @@ class BlazePosePort(nn.Module):
             raise RuntimeError(f"tensor {tensor_idx} has no constant data")
         return arr
 
+    # ----- live-op analysis (backward reachability from kept outputs) -----
+    def _compute_live_set(self) -> None:
+        """Backward-walk the op graph from LIVE_OUTPUTS to find every op
+        that contributes to a kept output.  Ops that only feed dropped
+        outputs are excluded from forward, and their CONV/DWCONV weight
+        params are frozen so they don't appear in any autograd graph
+        (lets DDP run with find_unused_parameters=False).
+        """
+        # Resolve LIVE_OUTPUTS / DROPPED_OUTPUTS by name → tensor_idx
+        name_to_tidx: dict[str, int] = {}
+        for tidx in self.output_idx:
+            t = self.sub.Tensors(tidx)
+            nm = t.Name().decode("utf-8") if t.Name() else f"out_{tidx}"
+            name_to_tidx[nm] = tidx
+        live_output_tidxs = {name_to_tidx[n] for n in self.LIVE_OUTPUTS
+                             if n in name_to_tidx}
+        dropped_output_tidxs = {name_to_tidx[n] for n in self.DROPPED_OUTPUTS
+                                if n in name_to_tidx}
+        if not dropped_output_tidxs:
+            self._live_op_indices = None  # nothing to drop
+            return
+        # Update self._live_output_idxs to only the live ones (forward()
+        # builds its return dict from this).
+        self._live_output_idxs = live_output_tidxs
+
+        # Backward reachability: a tensor is "needed" if it's a live output
+        # OR if some live op consumes it.  An op is "live" if any of its
+        # outputs is needed.  Iterate ops in REVERSE to handle this in O(N).
+        needed_tensors: set[int] = set(live_output_tidxs)
+        live_ops: set[int] = set()
+        for i in range(len(self._ops) - 1, -1, -1):
+            entry = self._ops[i]
+            outs = entry.get("outs", []) or []
+            if any(o in needed_tensors for o in outs):
+                live_ops.add(i)
+                ins = entry.get("ins", []) or []
+                needed_tensors.update(ins)
+        self._live_op_indices = live_ops
+
+        # Freeze parameters that feed only dropped ops (their gradients
+        # would be None → DDP all-reduce errors with find_unused_parameters=False).
+        n_frozen = 0
+        live_op_set = self._live_op_indices
+        live_param_idxs: set[int] = set()
+        for i, entry in enumerate(self._ops):
+            if i in live_op_set:
+                if entry.get("w_idx", -1) >= 0:
+                    live_param_idxs.add(entry["w_idx"])
+                if entry.get("b_idx", -1) >= 0:
+                    live_param_idxs.add(entry["b_idx"])
+        for tensor_idx, p in self._params.items():
+            if tensor_idx not in live_param_idxs:
+                p.requires_grad_(False)
+                n_frozen += 1
+        n_total = len(self._ops)
+        n_live = len(live_op_set)
+        n_skipped = n_total - n_live
+        n_dropped_outs = len(dropped_output_tidxs)
+        print(f"[port] live-op elision: kept {n_live}/{n_total} ops, "
+              f"skipping {n_skipped} ({100 * n_skipped / max(n_total, 1):.1f}%); "
+              f"dropped outputs={sorted(self.DROPPED_OUTPUTS)}; "
+              f"frozen {n_frozen} dead-branch params")
+
     # ----- forward ----------------------------------------------------
     def forward(self, x: torch.Tensor):
         """x: (1, 3, 256, 256) NCHW float32 in [0, 1].
@@ -294,7 +377,10 @@ class BlazePosePort(nn.Module):
         else:
             raise ValueError(f"expected (B,3,H,W) input, got {tuple(x.shape)}")
 
-        for entry in self._ops:
+        live_set = self._live_op_indices
+        for i, entry in enumerate(self._ops):
+            if live_set is not None and i not in live_set:
+                continue  # dead-branch elimination
             name = entry["name"]
             if name == "DEQUANTIZE":
                 continue
@@ -318,8 +404,12 @@ class BlazePosePort(nn.Module):
                 ) from e
 
         # Map output tensor indices to their .tflite names + permute 4-D back.
+        # Only emit live outputs — dropped ones (Identity_2/_3 by default) are
+        # absent from `vals` because their producer ops were elided above.
         out: dict[str, torch.Tensor] = {}
         for tidx in self.output_idx:
+            if tidx not in vals:
+                continue
             t = vals[tidx]
             t_obj = self.sub.Tensors(tidx)
             tname = (t_obj.Name().decode("utf-8")
