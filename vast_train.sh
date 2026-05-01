@@ -3,14 +3,18 @@
 # End-to-end training orchestrator for Vast.ai.
 #
 # Stages:
+#   0. Recreate benchmark/frames/ (26-take SOTA val subset)      (~10-20 min, ~1.1 GB)
 #   1. Download synth corpus from HuggingFace → /data/synth     (~30 min, ~25 GB)
 #   2. Download Ego-Exo4D train split via egoexo CLI            (~3-6 hr, ~400 GB transient)
 #      + extract annotated frames per take, deleting videos after.
 #   3. Pre-cache Heavy + (optional) Hand + Face teachers        (~3-6 hr GPU)
-#   4. Train Lite v2 (10 epochs, ~7 hr A100)                    (~$11)
-#   5. Train Full v2 (10 epochs, ~7 hr A100)                    (~$11)
+#   4. Train Lite v2 (DDP across NPROC_TRAIN GPUs)              (~7 hr A100 / ~3-4 hr 4×5070Ti)
+#   5. Train Full v2 (DDP across NPROC_TRAIN GPUs)              (~7 hr A100 / ~3-4 hr 4×5070Ti)
 #   6. Export both as .task                                      (~5 min)
-#   7. Score against the SOTA benchmark                          (~5 min)
+#   7. Score MediaPipe(.task) on benchmark vs v1 Lite/Full/Heavy (~25 min)
+#      → benchmark/results/analysis_v2.json
+#      v1 in-spec PA-MPJPE: Lite 90.7mm  Full 86.0mm  Heavy 93.2mm
+#      target: student_v2_full ≤ 86 mm at the same inference cost
 #
 # Each stage is idempotent — re-running picks up where it left off.
 #
@@ -63,6 +67,26 @@ TRAIN_LIMIT_FLAGS=()
 [ -n "${LIMIT_EGOEXO:-}" ] && TRAIN_LIMIT_FLAGS+=(--limit-egoexo "$LIMIT_EGOEXO")
 
 want_stage() { [ "$STAGE" = "all" ] || [ "$STAGE" = "$1" ]; }
+
+# 0. Benchmark -----------------------------------------------------------
+# Recreate `benchmark/frames/` + `benchmark/raw/annotations/` on Vast by
+# re-extracting the 26-take SOTA val subset from Ego-Exo4D.  The take_uids
+# (subset.json) and per-frame manifest (frames_manifest.json) are already
+# in the repo, so the result is byte-stable with the local benchmark.
+# Idempotent — skips if frames are already on disk.
+# Powers `train.py:benchmark_eval()` (per-epoch BENCH_PA_MPJPE) and stage 7
+# (post-export apples-to-apples eval against v1 Lite/Full/Heavy).
+if want_stage 0; then
+    if [ ! -d "$ROOT/benchmark/frames" ] || \
+       [ -z "$(ls -A "$ROOT/benchmark/frames" 2>/dev/null)" ]; then
+        log "stage 0: extract benchmark val frames (26 takes, ~1.1 GB, ~10-20 min)"
+        python3 prep/extract_benchmark_val.py \
+            --raw-root    "$ROOT/benchmark/raw" \
+            --frames-root "$ROOT/benchmark/frames"
+    else
+        log "stage 0: benchmark frames already on disk; skipping"
+    fi
+fi
 
 # 1. Synth -------------------------------------------------------------
 if want_stage 1 && [ ! -f /data/synth/labels.jsonl ]; then
@@ -222,15 +246,39 @@ if want_stage 6; then
 fi
 
 # 7. Benchmark ---------------------------------------------------------
+# Apples-to-apples PA-MPJPE vs v1 Lite/Full/Heavy on the same 26-take /
+# 1,292-frame subset that produced benchmark/results/RESULTS.md.  Uses
+# MediaPipe + the exported .task files (NOT the PyTorch port that runs
+# during training), so the numbers are directly comparable to v1.
+#
+# v1 in-spec ≤ 4 m: Lite 90.7mm  Full 86.0mm  Heavy 93.2mm
+# Target: student_v2_full ≤ 86 mm beats v1 Full at the same inference cost.
 if want_stage 7; then
-    log "stage 7: benchmark vs Lite/Full/Heavy v1"
-    # The benchmark tooling expects student .task files dropped into
-    # benchmark/assets/.  For now, rerun with the v1 baseline scripts on
-    # the v2 .task files (the user wires this up; benchmark/run_eval.py
-    # has --variant; extending MODEL_PATHS is one line).
-    log "  (manual step) extend benchmark/run_eval.py MODEL_PATHS to include "
-    log "  student_v2_lite + student_v2_full pointing at /workspace/exports/*.task"
-    log "  then: cd benchmark && python analyze.py --manual-only --variants lite full heavy student_v2_lite student_v2_full"
+    if [ ! -d "$ROOT/benchmark/frames" ] || \
+       [ -z "$(ls -A "$ROOT/benchmark/frames" 2>/dev/null)" ]; then
+        log "stage 7: benchmark frames missing — running stage 0 first"
+        python3 prep/extract_benchmark_val.py \
+            --raw-root    "$ROOT/benchmark/raw" \
+            --frames-root "$ROOT/benchmark/frames"
+    fi
+    log "stage 7: run MediaPipe inference on all 5 variants (~5 min each)"
+    # v1 predictions are .gitignored, so regenerate on Vast.  run_eval.py
+    # caches per-take JSON and skips if already present, so reruns are fast.
+    export V2_EXPORTS_DIR="/workspace/exports"
+    cd "$ROOT/benchmark"
+    for v in lite full heavy student_v2_lite student_v2_full; do
+        python3 run_eval.py --variant "$v"
+    done
+    log "stage 7: PA-MPJPE analysis vs v1 baselines"
+    python3 analyze.py --manual-only \
+        --variants lite full heavy student_v2_lite student_v2_full \
+        --out results/analysis_v2.json
+    log "stage 7: results saved to benchmark/results/analysis_v2.json"
+    log "         v1 baseline (from results/RESULTS.md):"
+    log "           in-spec ≤ 4 m: Lite 90.7mm  Full 86.0mm  Heavy 93.2mm"
+    log "           full set:      Lite 99.4mm  Full 96.0mm  Heavy 101.6mm"
+    log "         target: student_v2_full ≤ 86 mm (matches v1 Full)"
+    cd "$ROOT"
 fi
 
 log "DONE"

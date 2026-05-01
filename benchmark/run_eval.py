@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -25,10 +26,17 @@ sys.path.insert(0, str(HERE))
 from lib.keypoint_map import BP_INDEX_FOR_COCO
 
 ASSETS = HERE.parent / "assets"
+# v2 student exports: V2_EXPORTS_DIR overrides the default.  Vast.ai's
+# vast_train.sh stage 7 sets V2_EXPORTS_DIR=/workspace/exports.  On the
+# dev box the user can scp the .task files into BlazePose tune/exports/.
+V2_EXPORTS = Path(os.environ.get("V2_EXPORTS_DIR",
+                                 HERE.parent / "exports"))
 MODEL_PATHS = {
-    "lite":  ASSETS / "pose_landmarker_lite.task",
-    "full":  ASSETS / "pose_landmarker_full.task",
-    "heavy": ASSETS / "pose_landmarker_heavy.task",
+    "lite":            ASSETS / "pose_landmarker_lite.task",
+    "full":            ASSETS / "pose_landmarker_full.task",
+    "heavy":           ASSETS / "pose_landmarker_heavy.task",
+    "student_v2_lite": V2_EXPORTS / "lite_v2.task",
+    "student_v2_full": V2_EXPORTS / "full_v2.task",
 }
 
 

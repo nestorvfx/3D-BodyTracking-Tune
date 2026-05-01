@@ -106,14 +106,21 @@ def quick_val(student, anchor, val_loader, device, dtype) -> dict:
 
 
 @torch.no_grad()
-def benchmark_eval(student, device, dtype, max_takes: int = 5) -> dict:
-    """Run the SOTA benchmark on a small subset of frames.  Computes
-    PA-MPJPE-vs-Heavy-v1 — directly the metric we want to track training on.
+def benchmark_eval(student, device, dtype, max_takes: int = 26,
+                   max_frames_per_cam: int = 3) -> dict:
+    """Run the SOTA benchmark on a stable subset of frames.  Computes
+    PA-MPJPE-vs-GT — directly the metric we want to track training on
+    (lower is better; v1 baselines: Lite 99.4mm / Full 96.0mm / Heavy 101.6mm
+    on the full 1,292-frame benchmark, see benchmark/results/RESULTS.md).
 
-    Loads frames from `benchmark/frames/` (must already be extracted by
-    the benchmark pipeline; on Vast this is part of the held-out artefact)
-    and `benchmark/frames_manifest.json`.  Returns NaN-filled dict if the
-    benchmark isn't on disk yet — non-fatal."""
+    Default max_takes=26 = the entire 26-take benchmark; max_frames_per_cam=3
+    keeps per-epoch eval to ~300 frames (~100 sec on a single 5070 Ti).
+    Note: this runs the *PyTorch port*, not the exported .task — for the
+    canonical apples-to-apples number against v1, use
+    benchmark/run_eval.py + analyze.py against the .task files (stage 7).
+
+    Loads frames from `benchmark/frames/` and `benchmark/frames_manifest.json`.
+    Returns NaN-filled dict if the benchmark isn't on disk yet — non-fatal."""
     import sys, json, numpy as np, cv2
     sys.path.insert(0, str(HERE.parent / "benchmark"))
     BENCH = HERE.parent / "benchmark"
@@ -146,7 +153,7 @@ def benchmark_eval(student, device, dtype, max_takes: int = 5) -> dict:
             cam = cp["cams"].get(cam_name)
             if cam is None or not is_exo_cam(cam_name):
                 continue
-            for fi in fidxs[:3]:
+            for fi in fidxs[:max_frames_per_cam]:
                 jpg = frames_root / uid / cam_name / f"{int(fi):06d}.jpg"
                 if not jpg.exists():
                     continue
@@ -578,7 +585,7 @@ def main():
             eval_model = _unwrap(student)
             eval_model.eval()
             val_metrics = quick_val(eval_model, anchor, val_loader, device, dtype)
-            bench_metrics = benchmark_eval(eval_model, device, dtype, max_takes=5)
+            bench_metrics = benchmark_eval(eval_model, device, dtype)
             per_kp_metrics = per_keypoint_breakdown(eval_model, anchor, val_loader,
                                                     device, dtype)
             all_metrics = {**val_metrics, **bench_metrics, **per_kp_metrics}
