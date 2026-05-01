@@ -533,15 +533,14 @@ def main():
     # ── DDP wrap (after model is on device, before optimizer is built so the
     #              optimizer sees the wrapped params) ────────────────────────
     if is_dist:
-        # find_unused_parameters=False is now safe because port.py's live-op
-        # elision drops Identity_2 / Identity_3 from the forward graph
-        # entirely AND freezes (requires_grad=False) every conv/dwconv that
-        # only fed those dropped outputs.  Every remaining trainable param
-        # is therefore guaranteed in the autograd graph each step.
-        # Saves the per-step extra autograd traversal that
-        # find_unused_parameters=True forces (~5-10% throughput).
+        # Live-op elision in port.py freezes 44 of the 46 unused params, but
+        # 2 (param indices 130, 131 — a single conv w/b pair via concat-style
+        # graph topology my backward-reachability missed) still don't receive
+        # gradients.  Keep find_unused_parameters=True to handle the residual.
+        # The 25% wall-clock win from elision dominates the ~5% cost of this
+        # flag's per-step graph traversal.
         student = DDP(student, device_ids=[local_rank],
-                      find_unused_parameters=False)
+                      find_unused_parameters=True)
 
     # ── Optim + sched + EMA ─────────────────────────────────────────────
     opt = torch.optim.AdamW(student.parameters(), lr=args.lr,
