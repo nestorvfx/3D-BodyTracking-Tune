@@ -72,10 +72,20 @@ TRAIN_LIMIT_FLAGS=()
 # v1 Full on Ego-Exo4D exo views (-5.6 mm; benchmark/results/RESULTS.md).
 # New defaults: heavy KD off, image-frame anchor 5.0× to dominate, hard 0.3×
 # because synth's MPFB-rig joints have systematic 1-4 cm offset everywhere.
-LAM_HARD="${LAM_HARD:-0.3}"
+# LAM_HARD=0 default: smoke 5 confirmed L_hard pulls student away from v1
+# even with synth contribution disabled, because egoexo's body-axis hard
+# labels are computed from egoexo-annotated hip/shoulders (visual-landmark
+# annotation with 14-px reprojection floor), while L_anchor pulls toward
+# v1's body-axis predictions computed from v1's OWN hip/shoulder estimates.
+# These are different frames — student can't satisfy both simultaneously.
+# Drop L_hard entirely; rely on L_anchor + L_anchor_img + L_multiview.
+# Multi-view loss provides 2D image-frame supervision via reprojection
+# (avoids the body-frame mismatch).
+LAM_HARD="${LAM_HARD:-0.0}"
 LAM_KD_B="${LAM_KD_B:-0.5}"
 LAM_ANCHOR="${LAM_ANCHOR:-1.0}"
 LAM_ANCHOR_IMG="${LAM_ANCHOR_IMG:-5.0}"
+LAM_MV="${LAM_MV:-0.5}"   # boosted from 0.2 — now load-bearing image-frame GT signal
 USE_HEAVY_KD="${USE_HEAVY_KD:-0}"          # 0 = off (default); 1 = enable Heavy KD
 FREEZE_BACKBONE="${FREEZE_BACKBONE:-0}"    # 0 = full fine-tune; 1 = heads only
 # Synth labels are MPFB2 rig joints with 1-4 cm offset from BlazePose visual
@@ -92,6 +102,7 @@ VARIANT_LR_FULL="${VARIANT_LR_FULL:-0.5}"
 
 LOSS_FLAGS=(--lam-hard "$LAM_HARD" --lam-kd-b "$LAM_KD_B"
             --lam-anchor "$LAM_ANCHOR" --lam-anchor-img "$LAM_ANCHOR_IMG"
+            --lam-mv "$LAM_MV"
             --lr-scale-rule "$LR_RULE" --warmup-steps "$WARMUP_STEPS")
 [ "$USE_HEAVY_KD"       = "1" ] && LOSS_FLAGS+=(--use-heavy-kd)
 [ "$FREEZE_BACKBONE"    = "1" ] && LOSS_FLAGS+=(--freeze-backbone)

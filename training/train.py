@@ -286,12 +286,19 @@ def main():
     ap.add_argument("--seed",           type=int,   default=42)
     # Loss-weight knobs (default to V2DistillationLoss signature defaults).
     # Set non-zero to let the user iterate on the smoke without code edits.
-    ap.add_argument("--lam-hard",       type=float, default=0.3,
-                    help="Synth/egoexo hard sup.  Synth's MPFB-rig joint "
-                         "definitions are 1-4 cm off from BlazePose visual "
-                         "landmarks across most joints.  Keep this small so "
-                         "synth pulls only loosely; rely on anchor + KD.")
+    ap.add_argument("--lam-hard",       type=float, default=0.0,
+                    help="Body-axis hard supervision weight.  DEFAULT 0 "
+                         "because egoexo's body-frame is defined by "
+                         "egoexo-annotated hips/shoulders (14-px reprojection "
+                         "noise floor) while L_anchor uses v1's own internal "
+                         "estimate — different frames, student can't track "
+                         "both.  Rely on L_anchor + L_anchor_img + L_multiview "
+                         "(image-frame reprojection) instead.")
     ap.add_argument("--lam-kd-b",       type=float, default=0.5)
+    ap.add_argument("--lam-mv",         type=float, default=0.5,
+                    help="Multi-view reprojection loss.  Reproject student's "
+                         "body-axis pred back to image-frame and compare to "
+                         "annotated 2D — frame-agnostic image-space GT.")
     ap.add_argument("--lam-anchor",     type=float, default=1.0,
                     help="Body-axis anchor (Identity_4) weight.  Smoke showed "
                          "0.4 was too weak at effective batch 128 — student "
@@ -537,10 +544,12 @@ def main():
         lam_kd_b       = args.lam_kd_b,
         lam_anchor     = args.lam_anchor,
         lam_anchor_img = args.lam_anchor_img,
+        lam_mv         = args.lam_mv,
     )
     if is_main:
         print(f"[train] loss weights: hard={args.lam_hard}  kd_b={args.lam_kd_b}  "
-              f"anchor={args.lam_anchor}  anchor_img={args.lam_anchor_img}")
+              f"anchor={args.lam_anchor}  anchor_img={args.lam_anchor_img}  "
+              f"mv={args.lam_mv}")
     # EMA shadow weights live only on rank 0 (DDP keeps replicas in sync, so
     # rank 0's copy is canonical).  Saves 3× memory on a 4-GPU box.
     ema = EMA(_unwrap(student), decay=args.ema_decay) if is_main else None
