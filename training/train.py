@@ -533,15 +533,15 @@ def main():
     # ── DDP wrap (after model is on device, before optimizer is built so the
     #              optimizer sees the wrapped params) ────────────────────────
     if is_dist:
-        # PyTorch's runtime check confirmed there are no unused params despite
-        # Identity_2/3 (seg + heatmap) being absent from the loss — the
-        # backbone params upstream of those heads still receive gradients via
-        # other heads.  Setting find_unused_parameters=False removes a
-        # per-step autograd graph traversal AND tightens the all-reduce sync,
-        # which fixes the uneven GPU utilization (GPU 0/3 stalling at 0%
-        # while GPU 1/2 stayed at 100%) seen in the monitoring data.
+        # Required: Identity_2 (segmentation head) and Identity_3 (heatmap
+        # head) are computed in forward but NOT consumed by any loss term, so
+        # their head/conv params never get gradients.  PyTorch crashes at the
+        # second forward unless find_unused_parameters=True (it raises:
+        # "Expected to have finished reduction in the prior iteration").
+        # The earlier warning ("did not find any unused parameters") was a
+        # false-negative on the first iteration only.
         student = DDP(student, device_ids=[local_rank],
-                      find_unused_parameters=False)
+                      find_unused_parameters=True)
 
     # ── Optim + sched + EMA ─────────────────────────────────────────────
     opt = torch.optim.AdamW(student.parameters(), lr=args.lr,
