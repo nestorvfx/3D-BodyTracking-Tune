@@ -162,8 +162,10 @@ class SynthDataset(Dataset):
             R_body2cam = R_cam2body.T.astype(np.float32)
             origin_cam_ = _origin.astype(np.float32)
             mv_valid = 1.0
-        W_native = max(2.0 * float(K_native[0, 2]), 1.0)
-        H_native = max(2.0 * float(K_native[1, 2]), 1.0)
+        # Use explicit image_wh from synth label (more precise than 2*cx/cy)
+        W_native, H_native = rec.get("image_wh", [256, 192])
+        W_native = max(float(W_native), 1.0)
+        H_native = max(float(H_native), 1.0)
         K_norm = K_native.copy()
         K_norm[0, :] /= W_native
         K_norm[1, :] /= H_native
