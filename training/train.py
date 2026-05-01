@@ -586,6 +586,8 @@ def main():
     # ── Train loop ──────────────────────────────────────────────────────
     step = start_step
     t_last_ckpt = time.time()
+    best_delta_mm = float("inf")    # tracks the best epoch's Δ vs v1 (rank 0 only)
+    best_state_saved = False
     if is_main:
         print(f"[train] starting at step {step}/{total_steps}  "
               f"({len(train_loader)} steps/epoch × {args.epochs} epochs)")
@@ -746,6 +748,45 @@ def main():
                   f"BENCH: v2={v2_mm:.1f}  v1={v1_mm:.1f}  Δ={delta:+.1f}mm  "
                   f"per_kp_max={per_kp_metrics.get('per_kp_drift_max_mm', float('nan')):.1f}mm  "
                   f"vis_agree={per_kp_metrics.get('vis_agreement_pct', 0):.1f}%")
+
+            # Best-checkpoint selection (rank 0 only).  Smoke 6 epoch 2 had
+            # Δ=-2.8 mm (BEAT v1) but later epochs degraded to +10 mm; saving
+            # only the FINAL ckpt threw away the SOTA-quality intermediate
+            # state.  Track best per-epoch Δ-vs-v1 and snapshot the EMA
+            # weights at that point — that's the model we'll export.
+            if not (delta != delta):  # not NaN
+                if delta < best_delta_mm:
+                    best_delta_mm = delta
+                    best_path = args.out_root / f"{args.variant}_best.pt"
+                    # Apply EMA to the unwrapped module BEFORE saving — that's
+                    # the form export.py expects.  Snapshot then restore so
+                    # training continues from the live (non-EMA) weights.
+                    if ema is not None:
+                        live_state = {k: v.detach().clone()
+                                      for k, v in _unwrap(student).state_dict().items()}
+                        ema.apply_to(_unwrap(student))
+                        torch.save({
+                            "student": _unwrap(student).state_dict(),
+                            "ema":     ema.shadow,
+                            "opt":     opt.state_dict(),
+                            "step":    step,
+                            "epoch":   epoch + 1,
+                            "delta_mm": delta,
+                        }, best_path)
+                        # Restore live weights
+                        _unwrap(student).load_state_dict(live_state)
+                    else:
+                        torch.save({
+                            "student": _unwrap(student).state_dict(),
+                            "ema":     None,
+                            "opt":     opt.state_dict(),
+                            "step":    step,
+                            "epoch":   epoch + 1,
+                            "delta_mm": delta,
+                        }, best_path)
+                    best_state_saved = True
+                    print(f"  [best-ckpt] new best Δ={delta:+.2f}mm @ epoch {epoch+1}  "
+                          f"-> {best_path}")
         # All ranks wait for rank 0 to finish val before starting next epoch
         if is_dist:
             dist.barrier()

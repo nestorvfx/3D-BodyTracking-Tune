@@ -286,9 +286,20 @@ fi
 # only stage 4 doesn't fail here).
 if want_stage 6; then
     log "stage 6: export .task files (byte-substitution into v1 flatbuffer)"
+    # Prefer {variant}_best.pt — it's the EMA snapshot at the lowest-Δ-vs-v1
+    # epoch.  Smoke 6 showed the FINAL ckpt was 9 mm worse than the best
+    # mid-training epoch, so always use best when available.
+    # CKPT_KIND=final to override.
+    CKPT_KIND="${CKPT_KIND:-best}"
     for v in lite full; do
-        ckpt="/workspace/ckpts/${v}_final.pt"
+        ckpt="/workspace/ckpts/${v}_${CKPT_KIND}.pt"
+        if [ ! -f "$ckpt" ] && [ "$CKPT_KIND" = "best" ]; then
+            # Fallback to _final.pt if _best.pt wasn't produced (legacy ckpt
+            # or training never beat v1 on per-epoch metric)
+            ckpt="/workspace/ckpts/${v}_final.pt"
+        fi
         if [ -f "$ckpt" ]; then
+            log "  exporting $v from $(basename "$ckpt")"
             python3 model/export.py --variant "$v" \
                 --ckpt "$ckpt" \
                 --out  "/workspace/exports/${v}_v2.task"
