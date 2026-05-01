@@ -36,6 +36,31 @@ sys.path.insert(0, str(HERE))
 from port import BlazePosePort, load_task   # noqa: E402
 
 
+# ─── NHWC adapter ─────────────────────────────────────────────────────────
+
+class _NHWCInputWrapper(torch.nn.Module):
+    """Adapts the NCHW-native PyTorch student to MediaPipe's NHWC input
+    convention.
+
+    v1 .task files (pose_landmarker_{lite,full,heavy}.task) have:
+      input  : "input_1"  shape (1, 256, 256, 3)  NHWC
+      outputs: Identity, Identity_1..4 (4-D ones in NHWC, matching port.forward)
+
+    Without this wrapper, litert_torch traces PyTorch-native NCHW and
+    MediaPipe rejects the result with:
+        "The input tensor should have dimensions 1 x height x width x depth,
+         where depth = 3 or 4. Got 1 x 3 x 256 x 256."
+    """
+
+    def __init__(self, student: BlazePosePort):
+        super().__init__()
+        self.student = student
+
+    def forward(self, input_1: torch.Tensor) -> dict:
+        x_nchw = input_1.permute(0, 3, 1, 2).contiguous()
+        return self.student(x_nchw)
+
+
 # ─── Path 1: AI Edge Torch ────────────────────────────────────────────────
 
 def export_via_ai_edge_torch(student: BlazePosePort, out_tflite: Path,
@@ -354,10 +379,14 @@ def export_task(student: BlazePosePort, src_task: Path, out_task: Path):
             zf.extractall(tmp)
         src_inner = tmp / "pose_landmarks_detector.tflite"
         out_inner = tmp / "pose_landmarks_detector.tflite.new"
-        # Try ai_edge_torch first
-        sample = torch.randn(1, 3, 256, 256)
-        ok = export_via_ai_edge_torch(student, out_inner, sample)
+        # Try ai_edge_torch first (Linux-only).  Wrap in the NHWC adapter so
+        # the resulting .tflite has v1's (1, 256, 256, 3) input layout.
+        sample = torch.randn(1, 256, 256, 3)
+        wrapper = _NHWCInputWrapper(student).eval()
+        ok = export_via_ai_edge_torch(wrapper, out_inner, sample)
         if not ok:
+            # Path 2 operates directly on the original .tflite (NHWC by
+            # construction), so it does NOT need the wrapper.
             rebuild_tflite(student, src_inner, out_inner)
         # Replace inside the temp dir
         out_inner.replace(src_inner)
