@@ -319,6 +319,16 @@ def main():
                          "Use as a sanity check that the loss is wired right; "
                          "or as the actual training mode if anchor-only KD "
                          "isn't enough.")
+    ap.add_argument("--disable-synth-hard", action="store_true", default=False,
+                    help="Mask synth's hard labels entirely (set bp33_present "
+                         "= 0 for all synth samples).  Synth labels are MPFB2 "
+                         "rig joints with 1-4 cm offset from BlazePose visual "
+                         "landmarks.  Smoke 4 confirmed L_hard pulled student "
+                         "toward MPFB while L_anchor pulled toward visual — "
+                         "the fight regressed benchmark.  With this flag, "
+                         "synth becomes a pure image-diversity source (anchor "
+                         "+ image-frame anchor only); ego-exo provides the "
+                         "only L_hard signal (its labels are visual landmarks).")
     # LR scaling rule for DDP.  At effective batch 4×BATCH, the constant 5e-5
     # was an overshoot in our smoke run (anchor loss rose 3.5×).  Sqrt scaling
     # is the gentle middle ground; "none" preserves single-GPU behavior.
@@ -415,7 +425,8 @@ def main():
         teacher_cache_dir=args.teacher_cache,
         augment=True,
         limit=args.limit_synth,
-        split="train")
+        split="train",
+        disable_hard=args.disable_synth_hard)
     synth_val_ds = SynthDataset(
         labels_jsonl=args.synth_root / "labels.jsonl",
         images_root=args.synth_root,
@@ -703,16 +714,27 @@ def main():
             eval_model.eval()
             val_metrics = quick_val(eval_model, anchor, val_loader, device, dtype)
             bench_metrics = benchmark_eval(eval_model, device, dtype)
+            # v1 baseline through the SAME path — the per-epoch benchmark uses
+            # train.py's PyTorch port + naive resize-to-256 (destroys the
+            # 448px ego-exo aspect ratio), so absolute numbers can be 100+ mm
+            # worse than the .task pipeline's 90 mm.  Comparing student to v1
+            # under the SAME broken metric tells us whether v2 is actually
+            # worse than v1 or just suffering from a methodology artifact.
+            v1_bench = benchmark_eval(anchor, device, dtype)
             per_kp_metrics = per_keypoint_breakdown(eval_model, anchor, val_loader,
                                                     device, dtype)
             all_metrics = {**val_metrics, **bench_metrics, **per_kp_metrics}
+            all_metrics["bench_v1_baseline_mm"] = v1_bench["bench_pa_mpjpe_mm"]
             for k, v in all_metrics.items():
                 if isinstance(v, (int, float)):
                     writer.add_scalar(f"val/{k}", v, step)
             eval_model.train()
+            v2_mm = bench_metrics["bench_pa_mpjpe_mm"]
+            v1_mm = v1_bench["bench_pa_mpjpe_mm"]
+            delta = v2_mm - v1_mm
             print(f"  === epoch {epoch+1}/{args.epochs}  "
                   f"drift={val_metrics['val_anchor_drift_m']:.4f}  "
-                  f"BENCH_PA_MPJPE={bench_metrics['bench_pa_mpjpe_mm']:.1f}mm  "
+                  f"BENCH: v2={v2_mm:.1f}  v1={v1_mm:.1f}  Δ={delta:+.1f}mm  "
                   f"per_kp_max={per_kp_metrics.get('per_kp_drift_max_mm', float('nan')):.1f}mm  "
                   f"vis_agree={per_kp_metrics.get('vis_agreement_pct', 0):.1f}%")
         # All ranks wait for rank 0 to finish val before starting next epoch

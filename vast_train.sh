@@ -78,6 +78,13 @@ LAM_ANCHOR="${LAM_ANCHOR:-1.0}"
 LAM_ANCHOR_IMG="${LAM_ANCHOR_IMG:-5.0}"
 USE_HEAVY_KD="${USE_HEAVY_KD:-0}"          # 0 = off (default); 1 = enable Heavy KD
 FREEZE_BACKBONE="${FREEZE_BACKBONE:-0}"    # 0 = full fine-tune; 1 = heads only
+# Synth labels are MPFB2 rig joints with 1-4 cm offset from BlazePose visual
+# landmarks across the WHOLE skeleton.  Smoke 4 confirmed this offset pulls
+# the student toward MPFB convention while L_anchor pulls toward visual,
+# regressing benchmark by 110+ mm.  Default ON: synth becomes a pure
+# image-diversity source via anchor distillation; ego-exo provides the only
+# L_hard signal.
+DISABLE_SYNTH_HARD="${DISABLE_SYNTH_HARD:-1}"
 LR_RULE="${LR_RULE:-sqrt}"
 WARMUP_STEPS="${WARMUP_STEPS:-1000}"
 VARIANT_LR_LITE="${VARIANT_LR_LITE:-1.0}"
@@ -86,8 +93,9 @@ VARIANT_LR_FULL="${VARIANT_LR_FULL:-0.5}"
 LOSS_FLAGS=(--lam-hard "$LAM_HARD" --lam-kd-b "$LAM_KD_B"
             --lam-anchor "$LAM_ANCHOR" --lam-anchor-img "$LAM_ANCHOR_IMG"
             --lr-scale-rule "$LR_RULE" --warmup-steps "$WARMUP_STEPS")
-[ "$USE_HEAVY_KD"    = "1" ] && LOSS_FLAGS+=(--use-heavy-kd)
-[ "$FREEZE_BACKBONE" = "1" ] && LOSS_FLAGS+=(--freeze-backbone)
+[ "$USE_HEAVY_KD"       = "1" ] && LOSS_FLAGS+=(--use-heavy-kd)
+[ "$FREEZE_BACKBONE"    = "1" ] && LOSS_FLAGS+=(--freeze-backbone)
+[ "$DISABLE_SYNTH_HARD" = "1" ] && LOSS_FLAGS+=(--disable-synth-hard)
 # NO_AUTO_RESUME=1: useful when iterating on loss config — old optimizer
 # state can carry stale gradient statistics and re-cause the previous
 # regression even with new lambdas.  Default 1 (don't auto-resume) for

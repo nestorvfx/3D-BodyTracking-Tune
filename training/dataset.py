@@ -161,13 +161,24 @@ class SynthDataset(Dataset):
                  teacher_cache_dir: Path | None = None,
                  augment: bool = False,
                  limit: int | None = None,
-                 split: str | None = "train"):
+                 split: str | None = "train",
+                 disable_hard: bool = False):
         """`split`: "train" | "val" | None (use all records).  Synth's
         clean.zip carries BOTH splits in the same labels.jsonl, partitioned
         by sha1(id)[:2] < 0x1A — deterministic, do NOT reshuffle.
-        Default "train" filters to ~89.8 % of records (133,418)."""
+        Default "train" filters to ~89.8 % of records (133,418).
+
+        `disable_hard`: if True, mask all 17 COCO joints out of L_hard for
+        every synth sample.  Synth's labels are MPFB2 rig joints (1-4 cm
+        offset from BlazePose visual landmarks across the WHOLE skeleton,
+        not just the few we per-index masked).  Smoke 4 confirmed L_hard
+        was steering the student toward MPFB convention while L_anchor
+        pulled toward visual; the fight regressed benchmark by 110+ mm.
+        With disable_hard=True synth becomes anchor-distillation-only —
+        a pure image-diversity source."""
         self.images_root = Path(images_root)
         self.records: list[dict[str, Any]] = []
+        self.disable_hard = disable_hard
         skipped = 0
         with Path(labels_jsonl).open() as fh:
             for ln in fh:
@@ -181,7 +192,8 @@ class SynthDataset(Dataset):
         self.teacher_cache_dir = Path(teacher_cache_dir) if teacher_cache_dir else None
         self.aug = maybe_load_aug_corpus() if augment else None
         print(f"[synth] {len(self.records)} {split or 'all'} records  "
-              f"(filtered {skipped} other-split)  augment={self.aug is not None}")
+              f"(filtered {skipped} other-split)  augment={self.aug is not None}  "
+              f"disable_hard={self.disable_hard}")
 
     def __len__(self):
         return len(self.records)
@@ -221,6 +233,8 @@ class SynthDataset(Dataset):
         # cause of the smoke run regressing v2_full lower body by 60-125 mm.
         present17[0:5] = 0.0    # face (nose, eyes, ears)
         present17[11:15] = 0.0  # hips + knees
+        if self.disable_hard:
+            present17[:] = 0.0  # synth becomes anchor-distill-only
         kp17_2d_native = kp2d_full[:, :2].astype(np.float32)
         # Random horizontal flip with KP-pair swap (p=0.5).  Must be done
         # BEFORE the body-axis transform so the swapped KPs feed coords.py.
