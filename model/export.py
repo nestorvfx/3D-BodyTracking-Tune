@@ -361,8 +361,11 @@ def export_task(student: BlazePosePort, src_task: Path, out_task: Path):
             rebuild_tflite(student, src_inner, out_inner)
         # Replace inside the temp dir
         out_inner.replace(src_inner)
-        # Repackage as .task ZIP
-        with zipfile.ZipFile(out_task, "w", zipfile.ZIP_DEFLATED) as zf:
+        # Repackage as .task ZIP — MediaPipe requires UNCOMPRESSED entries
+        # (ZIP_STORED) so the runtime can mmap-read the .tflite directly.
+        # Compressed (ZIP_DEFLATED) raises "Expected uncompressed zip archive"
+        # at PoseLandmarker.create_from_options time.
+        with zipfile.ZipFile(out_task, "w", zipfile.ZIP_STORED) as zf:
             for p in tmp.rglob("*"):
                 if p.is_file():
                     zf.write(p, p.relative_to(tmp))
