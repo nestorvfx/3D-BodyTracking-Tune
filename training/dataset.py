@@ -63,12 +63,29 @@ def hflip_with_kp_swap(img_bgr: np.ndarray, kp17_cam: np.ndarray,
 # ─── 256×256 letterbox ────────────────────────────────────────────────────
 
 def pad_to_square_256(img_bgr: np.ndarray) -> tuple[np.ndarray, int, int]:
+    """Letterbox to 256x256 BGR.
+
+    Handles both directions:
+      - synth (256x192):  scale=1, pad H by 32 each side  → 256x256
+      - ego-exo (448p, e.g. 796x448): scale=0.322 (256/796), resize to
+        (256x144), pad H by 56 each side → 256x256
+      - already 256x256: pass-through
+
+    Returns (padded_image, pad_h, pad_w).  Both pad values are post-resize.
+    """
     H, W = img_bgr.shape[:2]
     if (H, W) == (256, 256):
         return img_bgr, 0, 0
     target = 256
-    pad_w = (target - W) // 2 if W < target else 0
-    pad_h = (target - H) // 2 if H < target else 0
+    # Scale down if larger than target (preserve aspect ratio).
+    s = min(target / W, target / H, 1.0)   # never upscale
+    if s < 1.0:
+        new_W, new_H = max(1, int(round(W * s))), max(1, int(round(H * s)))
+        img_bgr = cv2.resize(img_bgr, (new_W, new_H), interpolation=cv2.INTER_AREA)
+        H, W = new_H, new_W
+    # Now W <= target and H <= target; pad remaining axes.
+    pad_w = (target - W) // 2
+    pad_h = (target - H) // 2
     out = cv2.copyMakeBorder(img_bgr, pad_h, target - H - pad_h,
                              pad_w, target - W - pad_w,
                              cv2.BORDER_CONSTANT, value=(0, 0, 0))
