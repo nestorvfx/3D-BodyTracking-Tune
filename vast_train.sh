@@ -227,16 +227,12 @@ if want_stage 5; then
 fi
 
 # 6. Export ------------------------------------------------------------
-# Export-time deps (litert-torch + tf-nightly) are intentionally NOT in the
-# main requirements.txt because tf-nightly conflicts with PyTorch nightly
-# cu128 during training.  Install them here, after training is done, just
-# for the export step.  If pip resolution fails, model/export.py
-# auto-falls-back to its custom flatbuffer rewriter (no external deps).
+# Pure byte-substitution into v1's .tflite — preserves flatbuffer
+# structure, op graph, BuiltinOptions, NHWC input layout, and the
+# TFLITE_METADATA buffer (NormalizationOptions for MediaPipe).
+# No external converter needed.
 if want_stage 6; then
-    log "stage 6: install export deps + export .task files"
-    python3 -m pip install --quiet --pre \
-        litert-torch tf-nightly || \
-        log "[warn] converter install failed; relying on custom flatbuffer rewriter"
+    log "stage 6: export .task files (byte-substitution into v1 flatbuffer)"
     python3 model/export.py --variant lite \
         --ckpt /workspace/ckpts/lite_final.pt \
         --out  /workspace/exports/lite_v2.task

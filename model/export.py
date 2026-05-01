@@ -1,21 +1,20 @@
-"""PyTorch → .task export for the v2 student.
+"""PyTorch → .task export for the v2 student via byte-substitution.
 
-Two paths, tried in order:
-  1. **Google AI Edge Torch** (official, Apache-2.0) — `ai_edge_torch.convert()`
-     traces the PyTorch model to TFLite.  Linux-only as of writing.
-  2. **Custom flatbuffer-buffer rewriter** (fallback) — keeps the original
-     `.task` op graph verbatim and re-quantizes trained weights back into
-     the original int8 buffers.  Preserves tensor names + output ordering
-     by construction (no graph changes).  Pure-flatbuffers, no third-party
-     port libraries.
+Read the original v1 .tflite as a mutable bytearray, walk the op graph
+to find each weight buffer's byte offset, and overwrite those bytes with
+the trained weights re-quantized to the original dtype + scale.  Every
+other byte (op graph, BuiltinOptions, signatures, tensor names, NHWC
+input layout, TFLITE_METADATA buffer with NormalizationOptions) is
+preserved verbatim — which is what MediaPipe's PoseLandmarker requires.
+
+The litert_torch / ai_edge_torch path was tried earlier but produces
+PyTorch-native NCHW input + drops TFLITE_METADATA; both are fatal at
+PoseLandmarker.create_from_options time.
 
 Output: `<out>/<variant>_v2.task` ZIP containing:
-  - pose_landmarks_detector.tflite   (rewritten with trained weights)
+  - pose_landmarks_detector.tflite   (byte-substituted with trained weights)
   - pose_detector.tflite             (verbatim copy from original)
   - metadata                         (verbatim copy)
-
-The MediaPipe pose graph in C++ consumes outputs by SignatureDef *index*,
-so the byte-identical op graph guarantees runtime compatibility.
 """
 from __future__ import annotations
 
@@ -36,64 +35,7 @@ sys.path.insert(0, str(HERE))
 from port import BlazePosePort, load_task   # noqa: E402
 
 
-# ─── NHWC adapter ─────────────────────────────────────────────────────────
-
-class _NHWCInputWrapper(torch.nn.Module):
-    """Adapts the NCHW-native PyTorch student to MediaPipe's NHWC input
-    convention.
-
-    v1 .task files (pose_landmarker_{lite,full,heavy}.task) have:
-      input  : "input_1"  shape (1, 256, 256, 3)  NHWC
-      outputs: Identity, Identity_1..4 (4-D ones in NHWC, matching port.forward)
-
-    Without this wrapper, litert_torch traces PyTorch-native NCHW and
-    MediaPipe rejects the result with:
-        "The input tensor should have dimensions 1 x height x width x depth,
-         where depth = 3 or 4. Got 1 x 3 x 256 x 256."
-    """
-
-    def __init__(self, student: BlazePosePort):
-        super().__init__()
-        self.student = student
-
-    def forward(self, input_1: torch.Tensor) -> dict:
-        x_nchw = input_1.permute(0, 3, 1, 2).contiguous()
-        return self.student(x_nchw)
-
-
-# ─── Path 1: AI Edge Torch ────────────────────────────────────────────────
-
-def export_via_ai_edge_torch(student: BlazePosePort, out_tflite: Path,
-                              sample_input: torch.Tensor) -> bool:
-    """Returns True on success; False if module not available or export fails.
-
-    Tries `litert_torch` (current Google name, Apr-2026+) first, then falls
-    back to the deprecated `ai_edge_torch` package, then signals failure
-    so the caller drops to the custom flatbuffer rewriter.
-    """
-    converter = None
-    for mod_name in ("litert_torch", "ai_edge_torch"):
-        try:
-            converter = __import__(mod_name)
-            print(f"[export] using {mod_name} ({getattr(converter, '__version__', '?')})")
-            break
-        except Exception as e:
-            print(f"[export] {mod_name} not available ({type(e).__name__}: {e})")
-    if converter is None:
-        print("[export] no Google converter installed; falling back to custom rewriter")
-        return False
-    try:
-        student.eval()
-        edge = converter.convert(student, (sample_input,))
-        edge.export(str(out_tflite))
-        print(f"[export] converter wrote {out_tflite}")
-        return True
-    except Exception as e:
-        print(f"[export] converter failed: {e}; falling back to custom rewriter")
-        return False
-
-
-# ─── Path 2: Custom buffer-rewrite ────────────────────────────────────────
+# ─── Re-quantization ──────────────────────────────────────────────────────
 
 def quantize_per_axis(arr: np.ndarray, scale: np.ndarray,
                       zero_point: np.ndarray, qd: int,
@@ -108,16 +50,128 @@ def quantize_per_axis(arr: np.ndarray, scale: np.ndarray,
     return qarr.astype(out_dtype)
 
 
+def _trained_params_by_tensor_idx(student: BlazePosePort) -> dict[int, np.ndarray]:
+    """Map original (subgraph 0) tensor_idx → trained PyTorch weight in
+    *original TFLite layout* (NHWC for conv weights, etc.)."""
+    tensor_to_param: dict[int, np.ndarray] = {}
+    for entry in student._ops:
+        if entry["name"] == "CONV_2D" and entry.get("w_idx", -1) >= 0:
+            t = student._params[entry["w_idx"]]              # (O, I, kH, kW) NCHW
+            tensor_to_param[entry["w_idx"]] = t.detach().permute(0, 2, 3, 1).cpu().numpy()
+            if entry.get("b_idx", -1) >= 0:
+                tensor_to_param[entry["b_idx"]] = student._params[
+                    entry["b_idx"]].detach().cpu().numpy()
+        elif entry["name"] == "DEPTHWISE_CONV_2D" and entry.get("w_idx", -1) >= 0:
+            t = student._params[entry["w_idx"]]              # (C*M, 1, kH, kW)
+            CM = t.shape[0]
+            kH, kW = t.shape[2], t.shape[3]
+            arr = t.detach().permute(2, 3, 1, 0).reshape(1, kH, kW, CM).cpu().numpy()
+            tensor_to_param[entry["w_idx"]] = arr
+            if entry.get("b_idx", -1) >= 0:
+                tensor_to_param[entry["b_idx"]] = student._params[
+                    entry["b_idx"]].detach().cpu().numpy()
+    return tensor_to_param
+
+
+def export_via_byte_substitution(student: BlazePosePort, src_tflite: Path,
+                                  out_tflite: Path) -> None:
+    """**Primary export path** for v2 students.
+
+    Reads the original v1 .tflite as a mutable bytearray, parses the
+    flatbuffer to locate each weight buffer's byte offset, and overwrites
+    those bytes IN PLACE with the re-quantized trained weights.  The op
+    graph, BuiltinOptions tables, signatures, tensor names, input layout
+    (NHWC), and TFLITE_METADATA buffer (which encodes NormalizationOptions
+    that MediaPipe requires) are all preserved byte-for-byte from v1.
+
+    Why this and not litert_torch?
+    - litert_torch produces a NEW .tflite with PyTorch-native NCHW input
+      layout — MediaPipe rejects with "Got 1 x 3 x 256 x 256".
+    - litert_torch strips the TFLITE_METADATA buffer — MediaPipe rejects
+      with "Input tensor has type float32: it requires specifying
+      NormalizationOptions metadata to preprocess input images."
+    - The previous rebuild_tflite path rebuilt the entire flatbuffer from
+      scratch and dropped BuiltinOptions union data (only set the type
+      tag).  Byte-substitution sidesteps all three issues by never touching
+      the flatbuffer structure — only the contents of fixed-length
+      weight-buffer regions.
+
+    Constraint: trained weights must have the same total byte length as
+    the original (true here — same shapes, same dtypes).
+    """
+    src_bytes = bytearray(src_tflite.read_bytes())
+    model = tflite.Model.GetRootAsModel(src_bytes, 0)
+    sub = model.Subgraphs(0)
+    tensor_to_param = _trained_params_by_tensor_idx(student)
+
+    # Build dequant indirection: weights in float16-quantized .task files are
+    # stored in a fp16 (or int8) buffer that feeds a DEQUANTIZE op; the CONV
+    # consumes the DEQUANTIZE *output* (a runtime fp32 tensor with no buffer).
+    # Map dequant_out_idx → dequant_in_idx so we know which buffer to overwrite.
+    dequant_out_to_in: dict[int, int] = {}
+    for i in range(sub.OperatorsLength()):
+        op = sub.Operators(i)
+        oc = model.OperatorCodes(op.OpcodeIndex())
+        if oc.BuiltinCode() == tflite.BuiltinOperator.DEQUANTIZE:
+            dequant_out_to_in[op.Outputs(0)] = op.Inputs(0)
+
+    n_swapped = 0
+    n_skipped = 0
+    for tensor_idx, fp32_arr in tensor_to_param.items():
+        # Resolve to the actual buffer-bearing tensor (follow DEQUANTIZE).
+        buf_tensor_idx = dequant_out_to_in.get(tensor_idx, tensor_idx)
+        t = sub.Tensors(buf_tensor_idx)
+        buf = model.Buffers(t.Buffer())
+        view = buf.DataAsNumpy()
+        # tflite-python returns int 0 for empty buffers, ndarray for non-empty
+        if not isinstance(view, np.ndarray) or view.size == 0:
+            n_skipped += 1
+            continue
+        ttype = t.Type()
+        # Build the bytes payload to write back, matching the original dtype.
+        if ttype == tflite.TensorType.FLOAT32:
+            payload = fp32_arr.astype(np.float32, copy=False).tobytes()
+        elif ttype == tflite.TensorType.FLOAT16:
+            payload = fp32_arr.astype(np.float16, copy=False).tobytes()
+        elif ttype == tflite.TensorType.INT8:
+            q = t.Quantization()
+            scale = np.asarray(q.ScaleAsNumpy(), dtype=np.float32)
+            zp    = np.asarray(q.ZeroPointAsNumpy(), dtype=np.float32)
+            qd    = q.QuantizedDimension() if scale.size > 1 else 0
+            qarr  = quantize_per_axis(fp32_arr, scale, zp, qd, out_dtype=np.int8)
+            payload = qarr.tobytes()
+        elif ttype == tflite.TensorType.INT32:
+            payload = np.asarray(fp32_arr, dtype=np.int32).tobytes()
+        else:
+            print(f"[export] skip tensor {tensor_idx} (unsupported dtype {ttype})")
+            n_skipped += 1
+            continue
+        # Sanity: byte length must match exactly (no shape drift)
+        if len(payload) != len(view):
+            print(f"[export] FATAL: tensor {tensor_idx} payload size mismatch "
+                  f"(have {len(payload)}, expected {len(view)})")
+            n_skipped += 1
+            continue
+        # Compute the absolute byte offset of this buffer's data in src_bytes
+        # via the numpy view's __array_interface__ (zero-copy view into the
+        # bytearray we own).
+        view_offset = view.ctypes.data - (
+            np.frombuffer(src_bytes, dtype=np.uint8).ctypes.data)
+        src_bytes[view_offset:view_offset + len(payload)] = payload
+        n_swapped += 1
+
+    out_tflite.parent.mkdir(parents=True, exist_ok=True)
+    out_tflite.write_bytes(bytes(src_bytes))
+    print(f"[export] byte-substituted {n_swapped} weights "
+          f"({n_skipped} skipped) -> {out_tflite}")
+
+
 def rebuild_tflite(student: BlazePosePort, src_tflite: Path,
                    out_tflite: Path) -> None:
-    """Walk the source .tflite op graph, swap each Buffer's bytes for the
-    re-quantized PyTorch parameter, write a new flatbuffer.
-
-    Strategy: read source as bytes, parse the schema, then build a NEW
-    flatbuffer using the `flatbuffers` Builder where every Buffer in the
-    original is recreated.  For Buffers we have a port-parameter tensor
-    for, we substitute the re-quantized payload; otherwise we copy
-    bytes verbatim.
+    """LEGACY rebuild path — walks the source .tflite op graph and rebuilds
+    the entire flatbuffer.  Drops BuiltinOptions union data (only sets the
+    type tag), so produced .tflite is structurally invalid.  Kept for
+    reference; export_task uses export_via_byte_substitution instead.
     """
     import flatbuffers
 
@@ -370,7 +424,13 @@ def _copy_quant(builder, q):
 
 def export_task(student: BlazePosePort, src_task: Path, out_task: Path):
     """Rebuild a `.task` ZIP with the trained weights baked into the
-    pose_landmarks_detector.tflite.  Other files in the .task copy verbatim."""
+    pose_landmarks_detector.tflite.  Other files in the .task copy verbatim.
+
+    Uses byte-substitution: read v1's .tflite, overwrite weight buffer bytes
+    in place with the trained values, leave the flatbuffer structure +
+    metadata + signatures alone.  This is the only path that produces a
+    .task MediaPipe will load (litert_torch breaks both input layout and
+    metadata; the legacy rebuild_tflite drops BuiltinOptions data)."""
     src_task = Path(src_task); out_task = Path(out_task)
     out_task.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory() as tmpdir_str:
@@ -379,21 +439,10 @@ def export_task(student: BlazePosePort, src_task: Path, out_task: Path):
             zf.extractall(tmp)
         src_inner = tmp / "pose_landmarks_detector.tflite"
         out_inner = tmp / "pose_landmarks_detector.tflite.new"
-        # Try ai_edge_torch first (Linux-only).  Wrap in the NHWC adapter so
-        # the resulting .tflite has v1's (1, 256, 256, 3) input layout.
-        sample = torch.randn(1, 256, 256, 3)
-        wrapper = _NHWCInputWrapper(student).eval()
-        ok = export_via_ai_edge_torch(wrapper, out_inner, sample)
-        if not ok:
-            # Path 2 operates directly on the original .tflite (NHWC by
-            # construction), so it does NOT need the wrapper.
-            rebuild_tflite(student, src_inner, out_inner)
-        # Replace inside the temp dir
+        export_via_byte_substitution(student, src_inner, out_inner)
         out_inner.replace(src_inner)
         # Repackage as .task ZIP — MediaPipe requires UNCOMPRESSED entries
         # (ZIP_STORED) so the runtime can mmap-read the .tflite directly.
-        # Compressed (ZIP_DEFLATED) raises "Expected uncompressed zip archive"
-        # at PoseLandmarker.create_from_options time.
         with zipfile.ZipFile(out_task, "w", zipfile.ZIP_STORED) as zf:
             for p in tmp.rglob("*"):
                 if p.is_file():
