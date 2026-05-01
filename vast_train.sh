@@ -64,14 +64,19 @@ if want_stage 2; then
                --benchmarks egopose --splits train -y
     fi
     if [ ! -f /data/egoexo/manifest_train.jsonl ]; then
-        log "stage 2b: stream-extract Ego-Exo4D train frames"
+        log "stage 2b: batched-bulk download + extract Ego-Exo4D train frames"
         EXTRA=()
         [ -n "${FAST:-}" ] && EXTRA+=(--limit-takes 50)
+        # Default batch=200 takes/call (~30 GB peak transient).  For FAST=1
+        # smoke (50 takes) we can fit all in one batch — set higher for full.
+        EE_BATCH="${EGOEXO_BATCH:-200}"
+        EE_WORKERS="${EGOEXO_WORKERS:-32}"
         python3 prep/extract_egoexo_train.py \
             --anno-root /data/egoexo/annotations \
             --raw-root /data/egoexo \
             --frames-root /data/egoexo/frames \
             --manifest-out /data/egoexo/manifest_train.jsonl \
+            --batch-size "$EE_BATCH" --num-workers "$EE_WORKERS" \
             "${EXTRA[@]}"
     fi
 fi
