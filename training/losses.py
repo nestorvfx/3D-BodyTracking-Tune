@@ -220,30 +220,28 @@ class V2DistillationLoss(nn.Module):
                 anchor_weight.sum().item(), 1.0)
 
             # ── 5b) Image-frame anchor KD (NEW — load-bearing) ────────────
-            # Identity is what MediaPipe's downstream pose graph consumes:
-            # 39 × (x_norm, y_norm, z_rel, visibility_logit, presence_logit).
-            # Distilling this directly anchors the student to v1's *image-
-            # frame* predictions — the same self-distillation Google used to
-            # train Lite from Heavy originally.
+            # Identity is what MediaPipe's downstream pose graph consumes;
+            # we anchor the student's *image-frame xyz* (channels 0,1,2 of
+            # the per-joint 5-tuple) to v1's image-frame xyz.
             #
-            # Without this, anchoring only on body-axis (Identity_4) leaves
-            # image-frame coordinates free to drift; the smoke run showed
-            # this as v2_full lower-body PA-MPJPE +60-125 mm vs v1.
+            # IMPORTANT calibration: BlazePose's Identity[..., :3] is in
+            # PIXEL units (0-256 for x/y on the 256-px input; z in similar
+            # scale).  We normalize by 256 so smooth_l1(beta=beta_kd=0.02)
+            # operates in fractional-image-coord space — a 1-pixel diff
+            # becomes ~0.004, well inside beta, contributing quadratically.
+            #
+            # We also DON'T distill visibility/presence here: those are
+            # ±200-range logits, and BCE between them on FixMatch's
+            # different-aug crops produced huge spurious gradients that
+            # regressed the smoke benchmark from 191→210 mm over 5 epochs.
             a_kp = split_kp_tuple(anchor["Identity"])
-            # 1) xyz error (smooth L1, light beta because coords ∈ [0, 1]ish)
-            err_xyz = F.smooth_l1_loss(s_kp["xyz"][:, :33], a_kp["xyz"][:, :33],
-                                       beta=0.01, reduction="none").mean(-1)
-            # Apply the same supervised/unsupervised weighting as L_anchor
-            err_xyz_weighted = (err_xyz * anchor_weight).sum() / max(
+            s_xy_norm = s_kp["xyz"][:, :33] / 256.0
+            a_xy_norm = a_kp["xyz"][:, :33] / 256.0
+            err_xyz = F.smooth_l1_loss(s_xy_norm, a_xy_norm,
+                                       beta=self.beta_kd, reduction="none").mean(-1)
+            # Reuse the supervised/unsupervised weighting from L_anchor
+            loss_terms["L_anchor_img"] = (err_xyz * anchor_weight).sum() / max(
                 anchor_weight.sum().item(), 1.0)
-            # 2) visibility + presence: BCE against v1's sigmoid'd outputs
-            vis_bce = F.binary_cross_entropy_with_logits(
-                s_kp["visibility"][:, :33], torch.sigmoid(a_kp["visibility"][:, :33]),
-                reduction="mean")
-            pres_bce = F.binary_cross_entropy_with_logits(
-                s_kp["presence"][:, :33], torch.sigmoid(a_kp["presence"][:, :33]),
-                reduction="mean")
-            loss_terms["L_anchor_img"] = err_xyz_weighted + 0.1 * (vis_bce + pres_bce)
 
         # ── 6) Multi-view (single-cam reprojection) consistency ───────────
         # Per-sample: invert the GT body-frame transform to get pred_cam,
