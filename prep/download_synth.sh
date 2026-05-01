@@ -1,14 +1,17 @@
 #!/usr/bin/env bash
 # ─────────────────────────────────────────────────────────────────────────
-# Download the 500k synthetic body-pose corpus from HuggingFace.
-# Repo: nestorvfx/3DBodyTrackingDatabase  (10 batches × ~4 GB)
+# Download the 148,543-record synthetic body-pose corpus from HuggingFace.
+# Repo: nestorvfx/3DBodyTrackingDatabase  (single clean.zip, 10.70 GB)
+#
+# The HF release ships:
+#   - data/clean.zip — single zip with images/<id>.png (148,543) + labels.jsonl
+#   - Already deduplicated, depth-filtered (Z ∈ [0.3, 50] m), bbox-filtered (>16 px)
+#   - Train (~89.8 %) and val (~10.2 %) splits both inside via sha1-hash split field
 #
 # Steps:
-#   1. curl 10 zips (3-at-a-time, resumable via curl -C -)
-#   2. integrity-check each zip
-#   3. flat-extract (cross-zip duplicates byte-identical → dedupe to ~149k)
-#   4. build labels.jsonl from per-image JSONs (parallelised)
-#   5. drop NaN-z and bbox<16px outliers
+#   1. hf download data/clean.zip
+#   2. unzip flat to OUT_DIR/  (yields images/ + labels.jsonl)
+#   3. quick sanity check (record count, image count match)
 #
 # Env:
 #   HF_TOKEN  — required, HuggingFace read token
@@ -18,111 +21,59 @@ set -euo pipefail
 
 OUT_DIR="${OUT_DIR:-/data/synth}"
 HF_TOKEN="${HF_TOKEN:?HF_TOKEN env var required}"
-HF_REPO="datasets/nestorvfx/3DBodyTrackingDatabase"
 
 log() { echo -e "\n\033[1;34m[synth-dl]\033[0m $*"; }
 
-mkdir -p "$OUT_DIR/data"
+mkdir -p "$OUT_DIR"
 cd "$OUT_DIR"
 
-log "downloading 10 zips to $OUT_DIR/data/"
-ALL=(01 02 03 04 05 06 07 08 09 10)
+# ── 0. Make sure hf-transfer is enabled (multi-Gbps HF downloads) ───────
+export HF_HUB_ENABLE_HF_TRANSFER=1
+pip install -q -U "huggingface_hub[hf_xet]" hf_transfer >/dev/null 2>&1 || true
 
-for ((i=0; i<${#ALL[@]}; i+=3)); do
-    GROUP=("${ALL[@]:i:3}")
-    log "group: ${GROUP[*]}"
-    for N in "${GROUP[@]}"; do
-        (
-            curl -L -C - -fsS -H "Authorization: Bearer $HF_TOKEN" \
-                -o "data/batch_${N}.zip" \
-                "https://huggingface.co/${HF_REPO}/resolve/main/data/batch_${N}.zip" \
-            && echo "[done] batch_${N}" \
-            || echo "[FAIL] batch_${N}"
-        ) &
-    done
-    wait
-done
+# ── 1. Download the single clean.zip (~10.7 GB) ────────────────────────
+log "downloading data/clean.zip from nestorvfx/3DBodyTrackingDatabase"
+HF_TOKEN="$HF_TOKEN" hf download nestorvfx/3DBodyTrackingDatabase \
+    data/clean.zip --repo-type dataset --local-dir .
 
-# ── 2. integrity ──────────────────────────────────────────────────────
+ZIP_PATH="$OUT_DIR/data/clean.zip"
+[ -f "$ZIP_PATH" ] || { echo "[fatal] clean.zip not found at $ZIP_PATH"; exit 1; }
+zsize=$(du -h "$ZIP_PATH" | cut -f1)
+log "downloaded: $ZIP_PATH ($zsize)"
+
+# ── 2. Verify zip integrity ────────────────────────────────────────────
 log "verifying zip integrity"
-BAD=0
-for z in data/batch_*.zip; do
-    if unzip -tq "$z" >/dev/null 2>&1; then
-        echo "  OK $z"
-    else
-        echo "  BAD $z"
-        BAD=$((BAD + 1))
-    fi
-done
-[ "$BAD" -eq 0 ] || { echo "[fatal] $BAD bad zips — re-run this script (curl -C - resumes)"; exit 1; }
+unzip -tq "$ZIP_PATH" >/dev/null || { echo "[fatal] clean.zip is corrupt"; exit 1; }
 
-# ── 3. flat-extract (dedupe via -o) ───────────────────────────────────
-log "extracting (sequential, disk-pressure-safe)"
-for z in data/batch_*.zip; do
-    log "  $z"
-    unzip -q -o "$z" -d .
-    df -h "$OUT_DIR" | tail -1
-done
+# ── 3. Extract — single file, single pass ──────────────────────────────
+log "extracting (~12 GB; 148,543 images + labels.jsonl)"
+unzip -q -o "$ZIP_PATH" -d .
 
-N_PNG=$(find . -maxdepth 1 -name "*.png"  -type f | wc -l)
-N_JSON=$(find . -maxdepth 1 -name "*.json" -type f | wc -l)
-log "extracted: $N_PNG PNGs, $N_JSON JSONs (expect ~149,292 each)"
+# Sanity: image count + labels.jsonl present
+N_PNG=$(find images -maxdepth 1 -name "*.png" -type f | wc -l)
+[ -f labels.jsonl ] || { echo "[fatal] labels.jsonl missing in clean.zip"; exit 1; }
+N_LBL=$(wc -l < labels.jsonl)
+log "extracted: $N_PNG PNGs in images/, $N_LBL records in labels.jsonl"
+[ "$N_PNG" -eq "$N_LBL" ] || \
+    { echo "[warn] PNG count $N_PNG ≠ labels count $N_LBL"; }
 
-# ── 4. build labels.jsonl ─────────────────────────────────────────────
-log "building labels.jsonl (parallel)"
-python3 - <<'PY'
-import json
-from concurrent.futures import ProcessPoolExecutor
-from pathlib import Path
-
-R = Path(".")
-files = list(R.glob("*.json"))
-print(f"  found {len(files)} JSON files")
-
-def parse(p):
-    try:
-        rec = json.loads(p.read_text())
-        rec["image_rel"] = f"{rec['id']}.png"
-        rec.pop("mask_rel", None)
-        rec.pop("depth_rel", None)
-        if not (R / rec["image_rel"]).exists():
-            return None
-        return json.dumps(rec, separators=(",", ":"))
-    except Exception:
-        return None
-
-n_ok = n_bad = 0
-with open("labels.jsonl", "w") as out, ProcessPoolExecutor(max_workers=8) as ex:
-    for line in ex.map(parse, files, chunksize=500):
-        if line is None:
-            n_bad += 1; continue
-        out.write(line + "\n"); n_ok += 1
-print(f"  labels.jsonl: {n_ok} written, {n_bad} skipped")
-PY
-
-# ── 5. drop outliers ──────────────────────────────────────────────────
-log "filtering: drop NaN-z and bbox<16 px"
-python3 - <<'PY'
-import json, os, math
-src, tmp = "labels.jsonl", "labels.jsonl.tmp"
-kept = dropped = 0
-with open(src) as fi, open(tmp, "w") as fo:
-    for line in fi:
-        rec = json.loads(line)
-        bw, bh = rec["bbox_xywh"][2], rec["bbox_xywh"][3]
-        if bw < 16 or bh < 16:
-            dropped += 1; continue
-        z = rec.get("root_joint_cam", [0, 0, 0])[-1]
-        if not math.isfinite(z) or z < 0.3 or z > 50:
-            dropped += 1; continue
-        fo.write(line); kept += 1
-os.replace(tmp, src)
-print(f"  kept={kept} dropped={dropped}")
-PY
-
-# ── 6. cleanup zips after successful extract ─────────────────────────
-log "cleanup: removing source zips (extract verified)"
-rm -f data/batch_*.zip
+# ── 4. Cleanup zip after successful extract ────────────────────────────
+log "cleanup: removing source zip (extract verified)"
+rm -f "$ZIP_PATH"
 rmdir data 2>/dev/null || true
 
-log "DONE — synth corpus ready at $OUT_DIR/  ($(wc -l < labels.jsonl) records)"
+# ── 5. Quick split-distribution check ──────────────────────────────────
+log "split distribution"
+python3 - <<'PY'
+import json
+from collections import Counter
+counts = Counter()
+with open("labels.jsonl") as f:
+    for line in f:
+        rec = json.loads(line)
+        counts[rec.get("split", "?")] += 1
+for k, v in sorted(counts.items()):
+    print(f"  {k}: {v}")
+PY
+
+log "DONE — synth corpus ready at $OUT_DIR/  ($N_LBL records, both splits)"

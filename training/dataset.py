@@ -104,17 +104,28 @@ class SynthDataset(Dataset):
     def __init__(self, labels_jsonl: Path, images_root: Path,
                  teacher_cache_dir: Path | None = None,
                  augment: bool = False,
-                 limit: int | None = None):
+                 limit: int | None = None,
+                 split: str | None = "train"):
+        """`split`: "train" | "val" | None (use all records).  Synth's
+        clean.zip carries BOTH splits in the same labels.jsonl, partitioned
+        by sha1(id)[:2] < 0x1A — deterministic, do NOT reshuffle.
+        Default "train" filters to ~89.8 % of records (133,418)."""
         self.images_root = Path(images_root)
         self.records: list[dict[str, Any]] = []
+        skipped = 0
         with Path(labels_jsonl).open() as fh:
             for ln in fh:
-                self.records.append(json.loads(ln))
+                rec = json.loads(ln)
+                if split is not None and rec.get("split") != split:
+                    skipped += 1
+                    continue
+                self.records.append(rec)
         if limit is not None:
             self.records = self.records[:limit]
         self.teacher_cache_dir = Path(teacher_cache_dir) if teacher_cache_dir else None
         self.aug = maybe_load_aug_corpus() if augment else None
-        print(f"[synth] {len(self.records)} records  augment={self.aug is not None}")
+        print(f"[synth] {len(self.records)} {split or 'all'} records  "
+              f"(filtered {skipped} other-split)  augment={self.aug is not None}")
 
     def __len__(self):
         return len(self.records)
@@ -141,6 +152,14 @@ class SynthDataset(Dataset):
         kp2d_full = np.asarray(rec["keypoints_2d"], dtype=np.float32)
         present17 = ((kp2d_full[:, 2] > 0).astype(np.float32) if kp2d_full.shape[1] >= 3
                      else np.ones(17, dtype=np.float32))
+        # Synth face KPs come from MPFB2 rig BONE heads/tails, NOT visual
+        # landmarks: nose ≈ face centre (not nose tip), ears ← eye-bone heads.
+        # BlazePose was trained with visual-landmark annotations; using these
+        # skeleton-anatomy KPs as hard supervision would inject a systematic
+        # 1-3 cm offset on face indices.  Mask COCO indices 0-4 (nose, eyes,
+        # ears) out of synth hard supervision; let Heavy KD cover face KPs
+        # via BP idx 0-10 (Heavy IS trained on visual-landmark style).
+        present17[0:5] = 0.0
         kp17_2d_native = kp2d_full[:, :2].astype(np.float32)
         # Random horizontal flip with KP-pair swap (p=0.5).  Must be done
         # BEFORE the body-axis transform so the swapped KPs feed coords.py.

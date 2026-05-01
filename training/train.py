@@ -301,12 +301,33 @@ def main():
         teacher.eval().to(device).to(dtype)
 
     # ── Datasets ────────────────────────────────────────────────────────
+    # Synth's clean.zip ships both splits.  Train on the train split, and
+    # use the val split as a held-out AR-replay tracker (close-frontal /
+    # 2-4 m / clean labels — proxy for BP v1's training distribution).
     synth_ds = SynthDataset(
         labels_jsonl=args.synth_root / "labels.jsonl",
         images_root=args.synth_root,
         teacher_cache_dir=args.teacher_cache,
         augment=True,
-        limit=args.limit_synth)
+        limit=args.limit_synth,
+        split="train")
+    synth_val_ds = SynthDataset(
+        labels_jsonl=args.synth_root / "labels.jsonl",
+        images_root=args.synth_root,
+        teacher_cache_dir=args.teacher_cache,
+        augment=False,           # val: no aug
+        limit=512,               # cap val to 512 frames for fast per-epoch eval
+        split="val")
+    # Fallback for tiny iter-set smoke runs that don't carry a val split:
+    # use a small slice of the train side as a degenerate "val" so the
+    # validation hooks still produce numbers.
+    if len(synth_val_ds) == 0:
+        print("[train] no val records — using first 32 of train as smoke val")
+        synth_val_ds = SynthDataset(
+            labels_jsonl=args.synth_root / "labels.jsonl",
+            images_root=args.synth_root,
+            teacher_cache_dir=args.teacher_cache,
+            augment=False, limit=32, split="train")
 
     train_ds: torch.utils.data.Dataset
     if args.egoexo_root and (args.egoexo_root / "manifest_train.jsonl").exists():
@@ -328,7 +349,8 @@ def main():
         print(f"[train] no Ego-Exo4D manifest — synth-only training")
         train_ds = synth_ds
 
-    val_loader = DataLoader(synth_ds, batch_size=min(args.batch_size, 8),
+    # Validation loader uses the held-out synth val split (AR-replay tracker).
+    val_loader = DataLoader(synth_val_ds, batch_size=min(args.batch_size, 8),
                             shuffle=False, num_workers=args.num_workers,
                             persistent_workers=args.num_workers > 0)
     train_loader = DataLoader(train_ds, batch_size=args.batch_size,
