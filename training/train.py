@@ -29,20 +29,29 @@ import sys
 import time
 from pathlib import Path
 
+import resource
 import torch
 import torch.distributed as dist
-import torch.multiprocessing as mp
 import torch.nn.functional as F
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
 from torch.utils.tensorboard import SummaryWriter
 
-# 'file_system' (vs default 'file_descriptor') avoids the per-process file-
-# descriptor exhaustion seen at NUM_WORKERS=4 with large augmentation corpora
-# being shared across workers via tensors in shared memory.  Negligible
-# perf impact, much safer for 4-rank × 4-worker dataloader pools.
-mp.set_sharing_strategy("file_system")
+# Use the default 'file_descriptor' sharing strategy (NOT 'file_system'):
+# the latter creates per-tensor files in /dev/shm (RAM-backed tmpfs) that
+# leak under persistent_workers=True — each batch's tensors aren't reaped
+# until the worker process dies, so memory grows step-over-step.  Hit OOM
+# at step 120 with NUM_WORKERS=4 BATCH=64 (4× more in-flight tensors than
+# the original NUM_WORKERS=2 BATCH=32 smoke that survived for hours).
+#
+# To avoid the fd-exhaustion 'file_descriptor' is prone to at high worker
+# counts, raise the soft fd limit to the hard limit (typically 65536 on
+# Vast).  Each rank's worker pool needs ~2 fds per concurrent shared
+# tensor; at 4 ranks × 8 workers × prefetch=2 × tensors/batch ~= 1024 fds,
+# well under 65536.
+_soft, _hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+resource.setrlimit(resource.RLIMIT_NOFILE, (_hard, _hard))
 
 
 def _unwrap(m: torch.nn.Module) -> torch.nn.Module:
