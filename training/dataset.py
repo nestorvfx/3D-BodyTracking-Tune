@@ -189,8 +189,17 @@ class SynthDataset(Dataset):
         With disable_hard=True synth becomes anchor-distillation-only —
         a pure image-diversity source."""
         self.images_root = Path(images_root)
-        self.records: list[dict[str, Any]] = []
         self.disable_hard = disable_hard
+
+        # Parse JSONL into a transient Python list, then convert to numpy
+        # arrays before exposing to fork().  This avoids the canonical
+        # PyTorch issue #13246 — fork-COW page bloat when worker processes
+        # read Python list/dict records (every refcount increment writes
+        # to the page, breaking COW and duplicating the page into the
+        # worker's resident memory).  Numpy arrays have a single refcount
+        # on the array header, not per element — workers can read freely
+        # without page-COW breakage.
+        records_temp: list[dict[str, Any]] = []
         skipped = 0
         with Path(labels_jsonl).open() as fh:
             for ln in fh:
@@ -198,17 +207,45 @@ class SynthDataset(Dataset):
                 if split is not None and rec.get("split") != split:
                     skipped += 1
                     continue
-                self.records.append(rec)
+                records_temp.append(rec)
         if limit is not None:
-            self.records = self.records[:limit]
+            records_temp = records_temp[:limit]
+
+        N = len(records_temp)
+        self._N = N
+        self.ids               = np.empty(N, dtype="<U32")
+        self.image_rel         = np.empty(N, dtype="<U96")
+        self.keypoints_3d_cam  = np.empty((N, 17, 3), dtype=np.float32)
+        self.keypoints_2d      = np.empty((N, 17, 3), dtype=np.float32)
+        self.camera_K          = np.empty((N, 3, 3),  dtype=np.float32)
+        self.image_wh          = np.empty((N, 2),     dtype=np.int32)
+
+        for i, rec in enumerate(records_temp):
+            self.ids[i]              = rec["id"]
+            self.image_rel[i]        = rec["image_rel"]
+            self.keypoints_3d_cam[i] = np.asarray(rec["keypoints_3d_cam"], dtype=np.float32)
+            kp2d = np.asarray(rec["keypoints_2d"], dtype=np.float32)
+            # Pad/truncate to (17, 3); some records may be (17, 2) without visibility
+            if kp2d.shape[1] >= 3:
+                self.keypoints_2d[i] = kp2d[:, :3]
+            else:
+                self.keypoints_2d[i, :, :2] = kp2d
+                self.keypoints_2d[i, :, 2] = 1.0
+            self.camera_K[i] = np.asarray(rec["camera_K"], dtype=np.float32)
+            wh = rec.get("image_wh", [256, 192])
+            self.image_wh[i] = (int(wh[0]), int(wh[1]))
+
+        # Free the transient Python list so its objects don't COW-bloat workers
+        del records_temp
+
         self.teacher_cache_dir = Path(teacher_cache_dir) if teacher_cache_dir else None
         self.aug = maybe_load_aug_corpus() if augment else None
-        print(f"[synth] {len(self.records)} {split or 'all'} records  "
+        print(f"[synth] {N} {split or 'all'} records  "
               f"(filtered {skipped} other-split)  augment={self.aug is not None}  "
-              f"disable_hard={self.disable_hard}")
+              f"disable_hard={self.disable_hard}  numpy-backed=True")
 
     def __len__(self):
-        return len(self.records)
+        return self._N
 
     def _load_teacher(self, sample_id: str) -> dict | None:
         if self.teacher_cache_dir is None:
@@ -220,18 +257,20 @@ class SynthDataset(Dataset):
         return {k: d[k] for k in d.files}
 
     def __getitem__(self, idx):
-        rec = self.records[idx]
-        img_path = self.images_root / rec["image_rel"]
+        # Read from numpy arrays (no Python object refcounting → fork-COW safe)
+        sample_id = str(self.ids[idx])
+        img_rel   = str(self.image_rel[idx])
+        img_path  = self.images_root / img_rel
         img_bgr = cv2.imread(str(img_path))
         if img_bgr is None:
             raise FileNotFoundError(img_path)
         img_padded, _, _ = pad_to_square_256(img_bgr)
 
         # Hard supervision: 17-COCO cam metres → BP-33 body-axis
-        kp17_cam = np.asarray(rec["keypoints_3d_cam"], dtype=np.float32)
-        kp2d_full = np.asarray(rec["keypoints_2d"], dtype=np.float32)
-        present17 = ((kp2d_full[:, 2] > 0).astype(np.float32) if kp2d_full.shape[1] >= 3
-                     else np.ones(17, dtype=np.float32))
+        # .copy() because we mutate present17/kp17_cam below (flips, masks)
+        kp17_cam = self.keypoints_3d_cam[idx].copy()
+        kp2d_full = self.keypoints_2d[idx].copy()
+        present17 = (kp2d_full[:, 2] > 0).astype(np.float32)
         # Synth KPs come from MPFB2 RIG BONE heads/tails, NOT visual
         # landmarks.  BlazePose was trained with visual-landmark annotations,
         # so using rig joints as hard supervision injects systematic offsets:
@@ -258,7 +297,7 @@ class SynthDataset(Dataset):
         # Multi-view consistency: synth has its own K + GT 2D so the same loss
         # applies.  Normalise to [0,1] image-frac coords.
         from coords import build_body_frame
-        K_native = np.asarray(rec["camera_K"], dtype=np.float32)
+        K_native = self.camera_K[idx].copy()
         R_cam2body, _origin = build_body_frame(kp17_cam, present17)
         if R_cam2body is None:
             R_body2cam = np.zeros((3, 3), dtype=np.float32)
@@ -269,9 +308,8 @@ class SynthDataset(Dataset):
             origin_cam_ = _origin.astype(np.float32)
             mv_valid = 1.0
         # Use explicit image_wh from synth label (more precise than 2*cx/cy)
-        W_native, H_native = rec.get("image_wh", [256, 192])
-        W_native = max(float(W_native), 1.0)
-        H_native = max(float(H_native), 1.0)
+        W_native = max(float(self.image_wh[idx, 0]), 1.0)
+        H_native = max(float(self.image_wh[idx, 1]), 1.0)
         K_norm = K_native.copy()
         K_norm[0, :] /= W_native
         K_norm[1, :] /= H_native
@@ -300,7 +338,7 @@ class SynthDataset(Dataset):
             "image_weak":     _to_tensor(img_weak),       # teacher / anchor input
             "bp33_xyz_body":  torch.from_numpy(bp33_xyz_body),
             "bp33_present":   torch.from_numpy(bp33_present),
-            "sample_id":      rec["id"],
+            "sample_id":      sample_id,
             "source":         "synth",
             # Multi-view consistency (uniform across synth + egoexo so MixedDataset works)
             "mv_valid":       torch.tensor(mv_valid, dtype=torch.float32),
@@ -312,7 +350,7 @@ class SynthDataset(Dataset):
         }
         # Always emit teacher tensors (zero placeholders + per-sample valid flag)
         # so default_collate sees uniform keys across samples.  Loss gates on valid.
-        _attach_teacher_fields(item, self._load_teacher(rec["id"]))
+        _attach_teacher_fields(item, self._load_teacher(sample_id))
         return item
 
 
@@ -331,20 +369,39 @@ class EgoExoTrainDataset(Dataset):
                  augment: bool = False, limit: int | None = None):
         self.frames_root = Path(frames_root)
         self.anno_root   = Path(anno_root)
-        self.records: list[dict[str, Any]] = []
+
+        # Numpy-backed records to avoid PyTorch issue #13246 fork-COW bloat
+        # (Python list/dict refcount writes break COW pages, duplicating
+        # ~16 GB of records into every dataloader worker over time → OOM
+        # at full 794k-sample corpus).
+        records_temp: list[dict[str, Any]] = []
         with Path(manifest_jsonl).open() as fh:
             for ln in fh:
-                self.records.append(json.loads(ln))
+                records_temp.append(json.loads(ln))
         if limit is not None:
-            self.records = self.records[:limit]
+            records_temp = records_temp[:limit]
+
+        N = len(records_temp)
+        self._N = N
+        self.take_uids   = np.empty(N, dtype="<U36")    # UUID
+        self.cams        = np.empty(N, dtype="<U24")    # e.g. "cam01_frontal"
+        self.frames_arr  = np.empty(N, dtype=np.int32)
+        self.image_paths = np.empty(N, dtype="<U96")    # relative under frames_root
+        for i, rec in enumerate(records_temp):
+            self.take_uids[i]   = rec["take_uid"]
+            self.cams[i]        = rec["cam"]
+            self.frames_arr[i]  = int(rec["frame"])
+            self.image_paths[i] = rec["image_path"]
+        del records_temp
+
         self._gt_cache: dict[str, dict] = {}        # uid -> body GT
         self._cp_cache: dict[str, dict] = {}        # uid -> camera_pose
         self.teacher_cache_dir = Path(teacher_cache_dir) if teacher_cache_dir else None
         self.aug = maybe_load_aug_corpus() if augment else None
-        print(f"[egoexo] {len(self.records)} samples  augment={self.aug is not None}")
+        print(f"[egoexo] {N} samples  augment={self.aug is not None}  numpy-backed=True")
 
     def __len__(self):
-        return len(self.records)
+        return self._N
 
     # Cache size cap: per-worker memory, full corpus has ~864 takes; capping
     # at 64 means each worker holds ~64 takes' worth of body GT JSON in memory
@@ -379,9 +436,12 @@ class EgoExoTrainDataset(Dataset):
         return cp
 
     def __getitem__(self, idx):
-        rec = self.records[idx]
-        uid = rec["take_uid"]; cam = rec["cam"]; fi = rec["frame"]
-        img_path = self.frames_root / rec["image_path"]
+        # Numpy-backed reads (no Python object refcount → fork-COW safe)
+        uid = str(self.take_uids[idx])
+        cam = str(self.cams[idx])
+        fi  = int(self.frames_arr[idx])
+        img_rel = str(self.image_paths[idx])
+        img_path = self.frames_root / img_rel
         img_bgr = cv2.imread(str(img_path))
         if img_bgr is None:
             raise FileNotFoundError(img_path)

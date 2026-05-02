@@ -480,7 +480,7 @@ def main():
             augment=True,
             limit=args.limit_egoexo)
         # Hold-out: collect uids from manifest + assert
-        manifest_uids = sorted({r["take_uid"] for r in ego_ds.records})
+        manifest_uids = sorted(set(str(u) for u in ego_ds.take_uids))
         forbidden_m = HERE.parent / "benchmark" / "frames_manifest.json"
         forbidden_s = HERE.parent / "benchmark" / "subset.json"
         assert_no_leakage(manifest_uids, forbidden_m, forbidden_s)
