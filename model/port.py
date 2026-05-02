@@ -82,7 +82,10 @@ def dequantize_constant(tensor, model: tflite.Model) -> np.ndarray:
     """Return fp32 ndarray for a constant tensor, applying TFLite quant if needed."""
     buf = model.Buffers(tensor.Buffer())
     raw = buf.DataAsNumpy()
-    if raw is None or raw.size == 0:
+    # tflite-python returns int 0 (not None, not ndarray) for empty buffers.
+    # Full model has at least one such empty buffer; Lite doesn't, which is
+    # why this only manifested when training Full.
+    if not isinstance(raw, np.ndarray) or raw.size == 0:
         return None
     shape = tensor.ShapeAsNumpy()
     shape = list(shape) if shape is not None else []
